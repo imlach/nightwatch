@@ -18,6 +18,7 @@ import (
 	nwv1 "github.com/imlach/nightwatch/api/v1alpha1"
 	"github.com/imlach/nightwatch/internal/controller"
 	"github.com/imlach/nightwatch/internal/inventory"
+	"github.com/imlach/nightwatch/internal/operate"
 )
 
 var scheme = runtime.NewScheme()
@@ -69,8 +70,9 @@ func main() {
 		setupLog.Info("inventory not loaded (provider is stubbed; wiring is the next increment)", "path", *inventoryPath, "err", invErr.Error())
 	}
 
-	// Backends provider -> target cluster + OOB adapters. Stubbed: cross-cluster
-	// wiring is the next increment (see internal/controller/provider.go).
+	// Backends provider -> target cluster + OOB adapters. Reuses the proven
+	// serve/CLI assembly (operate.RealBuilder) pointed at the target
+	// kubeconfig/talosconfig; BMC creds come from the mounted Secret via env.
 	backends := &controller.ClusterProvider{
 		Target: controller.TargetCluster{
 			Name:          *targetName,
@@ -79,6 +81,16 @@ func main() {
 			InventoryPath: *inventoryPath,
 		},
 		Inventory: inv,
+		BMCCreds:  bmcCredsFromEnv,
+		Config: operate.Config{
+			DrainTimeout:     10 * time.Minute,
+			StorageTimeout:   5 * time.Minute,
+			PowerOffTimeout:  5 * time.Minute,
+			ReachableTimeout: 5 * time.Minute,
+			ReadyTimeout:     10 * time.Minute,
+			GPUTimeout:       5 * time.Minute,
+			Poll:             10 * time.Second,
+		},
 	}
 
 	if err := (&controller.Reconciler{
@@ -111,4 +123,19 @@ func envDefault(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// bmcCredsFromEnv resolves BMC username/password by bmc.type from the mounted
+// Secret (ESO nightwatch-creds). AMT is the fleet default; iDRAC/Redfish is the
+// R740. Unknown types get empty creds (BackendsFor still builds the adapter,
+// which fails its first call - surfaced as PhaseError, no bad actuation).
+func bmcCredsFromEnv(bmcType string) (string, string) {
+	switch bmcType {
+	case "amt":
+		return os.Getenv("NIGHTWATCH_BMC_AMT_USERNAME"), os.Getenv("NIGHTWATCH_BMC_AMT_PASSWORD")
+	case "idrac", "redfish":
+		return os.Getenv("NIGHTWATCH_BMC_IDRAC_USERNAME"), os.Getenv("NIGHTWATCH_BMC_IDRAC_PASSWORD")
+	default:
+		return "", ""
+	}
 }

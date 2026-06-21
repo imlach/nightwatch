@@ -43,6 +43,10 @@ type NodeBackends struct {
 	// Timeouts/options resolved per node (Talos endpoint, GPU expectation, etc.).
 	DrainOpts   lifecycle.DrainShutdownOptions
 	PowerOnOpts lifecycle.PowerOnOptions
+
+	// Close releases per-node resources (e.g. the TrueNAS websocket) after the op;
+	// the reconciler defers it. May be nil.
+	Close func()
 }
 
 // observePower reads the BMC power state, mapping it to the API enum. An unknown

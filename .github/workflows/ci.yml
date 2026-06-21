@@ -1,0 +1,114 @@
+---
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+      - run: go test -tags=integration ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build Nightwatch image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+      - name: Build simulator image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.sim
+          push: false
+
+  # main push -> rolling :main. tag vX.Y.Z -> immutable :vX.Y.Z + :latest.
+  # Both the operator/CLI image and the test simulator image are published.
+  publish:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # Fine-grained PAT (Contents: write on imlach/cluster-iac) so a publish can
+      # tell the consuming infra repo to open a digest-bump PR. Absent on forks /
+      # before the secret is provisioned - the notify step self-skips.
+      DISPATCH_TOKEN: ${{ secrets.CLUSTER_IAC_DISPATCH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/imlach/nightwatch
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - id: build
+        name: Publish Nightwatch image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - id: meta-sim
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/imlach/nightwatch-sim
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Publish simulator image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.sim
+          push: true
+          tags: ${{ steps.meta-sim.outputs.tags }}
+          labels: ${{ steps.meta-sim.outputs.labels }}
+
+      # On a version tag only, tell cluster-iac the new release + digest; it opens
+      # a bot/bump-nightwatch-digest PR. The cluster tracks pinned :vX.Y.Z
+      # releases, so main pushes publish :main but never bump the cluster.
+      - name: Notify cluster-iac (digest bump)
+        if: env.DISPATCH_TOKEN != '' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ env.DISPATCH_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          printf '{"event_type":"nightwatch-image","client_payload":{"digest":"%s","ref":"%s"}}' \
+            "$DIGEST" "$REF_NAME" \
+            | gh api --method POST repos/imlach/cluster-iac/dispatches --input -

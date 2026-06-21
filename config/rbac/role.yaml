@@ -1,0 +1,34 @@
+# ClusterRole for nightwatch-operator on the MGMT cluster: it reconciles
+# ElasticNode CRs + their status and emits events. Target-cluster access is
+# separate (the Backends provider's own kubeconfig), NOT granted here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nightwatch-operator-role
+rules:
+  - apiGroups: ["nightwatch.imla.ch"]
+    resources: ["elasticnodes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["nightwatch.imla.ch"]
+    resources: ["elasticnodes/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["nightwatch.imla.ch"]
+    resources: ["elasticnodes/finalizers"]
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+# Leader-election lease + coordination (active/standby singleton on mgmt etcd).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nightwatch-operator-leader-election-role
+  namespace: nightwatch
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

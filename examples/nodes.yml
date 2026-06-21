@@ -1,0 +1,23 @@
+nodes:
+  node-1:
+    elastic_eligible: true
+    role: gpu-worker-small
+    talos_endpoint: "192.0.2.10"
+    kube_node_name: node-1
+    bmc:
+      type: amt
+      host: "192.0.2.1"
+    wake_policy:
+      quiet_mode: eligible
+    labels:
+      example.com/gpu-model: example-gpu
+    gpus:
+      - example-gpu
+  node-2:
+    elastic_eligible: false
+    role: gpu-worker-large
+    talos_endpoint: "192.0.2.11"
+    kube_node_name: node-2
+    bmc:
+      type: redfish
+      host: "https://192.0.2.2"

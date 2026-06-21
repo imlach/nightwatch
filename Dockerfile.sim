@@ -1,0 +1,16 @@
+# Nightwatch protocol simulators (TrueNAS JSON-RPC WS + AMT WS-Man) for the
+# hardware-free integration test path. Build context is the repo root.
+
+FROM golang:1.26-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -o /out/nightwatch-sim ./cmd/nightwatch-sim
+
+FROM alpine:3.24
+COPY --from=builder /out/nightwatch-sim /usr/local/bin/nightwatch-sim
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/nightwatch-sim"]

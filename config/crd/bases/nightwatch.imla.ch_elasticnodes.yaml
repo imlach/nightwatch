@@ -1,0 +1,110 @@
+# ElasticNode CRD - desired power-state per target-cluster node.
+# Hand-written to controller-gen output shape (controller-gen unavailable in the
+# toolchain); keep in sync with api/v1alpha1/elasticnode_types.go.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: elasticnodes.nightwatch.imla.ch
+spec:
+  group: nightwatch.imla.ch
+  names:
+    kind: ElasticNode
+    listKind: ElasticNodeList
+    plural: elasticnodes
+    singular: elasticnode
+    shortNames:
+      - en
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Desired
+          type: string
+          jsonPath: .spec.desiredPower
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Power
+          type: string
+          jsonPath: .status.observedPower
+        - name: Ready
+          type: boolean
+          jsonPath: .status.nodeReady
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: ElasticNode is the desired power-state record for one target-cluster node.
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: ElasticNodeSpec is the desired intent - the only state Nightwatch persists.
+              type: object
+              properties:
+                desiredPower:
+                  description: Target power state. Defaults to On (fail-safe in-service).
+                  type: string
+                  enum: [On, Off]
+                  default: On
+                desiredReason:
+                  description: Why the intent is what it is (observability only).
+                  type: string
+                clusterRef:
+                  description: Target workload cluster this node lives on; empty selects the default.
+                  type: string
+            status:
+              description: Best-effort observability written on transitions; never read for control flow.
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Ready, Draining, Off, PoweringOn, Error]
+                observedPower:
+                  type: string
+                  enum: [On, Off]
+                nodeReady:
+                  type: boolean
+                gpuRegistered:
+                  type: boolean
+                observedGeneration:
+                  type: integer
+                  format: int64
+                lastTransitionTime:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [lastTransitionTime, message, reason, status, type]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+      selectableFields: []

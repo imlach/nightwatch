@@ -1,0 +1,47 @@
+# Hardware-free integration path in containers: the two protocol sims plus a
+# runner that drives the REAL truenas/amtwsman clients at them over the network.
+#
+#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from tests
+#
+# The `tests` service runs only the env-driven compose tests (TestCompose*),
+# which connect to the sim containers by service name. The in-process sim tests
+# run via `make test-integration` and need no containers.
+
+services:
+  truenas-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim
+    command: ["-sim", "truenas", "-addr", ":8443", "-api-key", "test-key"]
+    expose:
+      - "8443"
+
+  amt-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim
+    command: ["-sim", "amt", "-addr", ":16992", "-realm", "Digest:sim"]
+    expose:
+      - "16992"
+
+  tests:
+    image: golang:1.26
+    working_dir: /src
+    depends_on:
+      - truenas-sim
+      - amt-sim
+    environment:
+      NIGHTWATCH_SIM_TRUENAS: "truenas-sim:8443"
+      NIGHTWATCH_SIM_TRUENAS_KEY: "test-key"
+      NIGHTWATCH_SIM_AMT: "http://amt-sim:16992"
+      GOCACHE: "/gocache"
+      GOMODCACHE: "/gomodcache"
+    volumes:
+      - .:/src:ro
+      - gocache:/gocache
+      - gomodcache:/gomodcache
+    command: ["go", "test", "-tags=integration", "-run", "TestCompose", "-v", "./internal/sim/..."]
+
+volumes:
+  gocache:
+  gomodcache:

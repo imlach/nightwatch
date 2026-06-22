@@ -39,8 +39,9 @@ It uses two Kubernetes clients: one for the management cluster (where the CRs
 live) and a separate target-cluster client (from the `Backends` provider) for the
 cordon/drain/Ready/GPU checks on the cluster being scaled.
 
-CRD + RBAC manifests are in `config/`. The cross-cluster `Backends` wiring
-(`internal/controller/provider.go`) is currently stubbed (see Roadmap).
+CRD + RBAC manifests are in `config/`. The cross-cluster `Backends` provider
+(`internal/controller/provider.go`) builds the target-cluster client and the
+per-node BMC/Talos/iSCSI adapters from the inventory ConfigMap + credentials Secret.
 
 ### Observability
 
@@ -116,11 +117,6 @@ set, so `make test-integration` is unaffected.
 
 Known gaps:
 
-- **Cross-cluster `Backends` wiring.** `ClusterProvider.BackendsFor`
-  (`internal/controller/provider.go`) is stubbed. Next: build the target-cluster
-  client from its kubeconfig, match the inventory entry by node name, and wire
-  `bmc.New`/`talos.New`/`iscsi.Gate` into the lifecycle deps (the adapters are
-  already proven by the sim tests). Inventory-from-ConfigMap loading rides along.
 - **Talos gRPC sim.** The full-loop test uses an in-process Talos fake; a real
   mTLS gRPC sim (needs CA + cert machinery) is a follow-up.
 

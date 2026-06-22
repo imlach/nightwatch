@@ -1,133 +1,111 @@
-# nightwatch
+# Nightwatch
 
-Bare-metal node lifecycle orchestrator for Talos-based workload clusters: graceful
-drain → iSCSI storage gate → OS shutdown → BMC power-off (and the wake path
-back). Talks to TrueNAS (JSON-RPC over WebSocket), Intel AMT (WS-Man over HTTP
-digest) and Dell iDRAC9 (Redfish over HTTPS), the Talos machine API (mTLS gRPC),
-and Kubernetes.
+Nightwatch powers bare-metal worker nodes down when they are not needed, then
+brings them back cleanly when capacity returns.
 
-This is a personal infrastructure tool published in the open for transparency and
-reuse. It is not packaged as a supported OSS product.
+It is built for Talos-based Kubernetes clusters where the hard part is not
+turning a machine off. The hard part is doing it without corrupting storage,
+stranding workloads, or needing a human to remember which out-of-band controller
+each box uses.
 
-## Images and releases
+Nightwatch coordinates the full lifecycle:
 
-CI publishes two images to GHCR on every push to `main` and on version tags:
+1. Cordon and drain the Kubernetes node.
+2. Wait for iSCSI sessions to clear from TrueNAS.
+3. Ask Talos to shut the OS down cleanly.
+4. Power the hardware off through its BMC.
+5. Wake it later and wait for Kubernetes and GPUs to come back.
 
-- `ghcr.io/imlach/nightwatch` - operator + CLI + `serve` API
-- `ghcr.io/imlach/nightwatch-sim` - protocol simulators for the integration tests
+This repository is a personal infrastructure tool published in the open for
+transparency and reuse. It is not packaged as a supported OSS product, but the
+core pieces are documented and tested without requiring access to the author's
+hardware.
 
-`main` is a rolling tag; pushing a `vX.Y.Z` git tag publishes the immutable
-`:vX.Y.Z` and `:latest`. Consumers should pin by digest. CI builds run on
-GitHub-hosted runners (no hardware or cluster access required).
+## What It Talks To
 
-## BMC drivers
+Nightwatch is intentionally small, but it crosses several control planes:
 
-Drivers self-register by `bmc.type`: `amt` (`internal/bmc/amtwsman`) and
-`redfish`/`idrac` (`internal/bmc/redfish`). The Redfish driver uses HTTP Basic
-auth and skips TLS verify for iDRAC's self-signed cert.
+- Kubernetes, for node drain/uncordon and the `ElasticNode` operator API.
+- Talos, for clean OS shutdown and machine readiness.
+- TrueNAS, for iSCSI session checks before power-off.
+- Intel AMT, via WS-Man over HTTP digest.
+- Dell iDRAC9 and compatible Redfish controllers, via HTTPS.
 
-## Operator (ElasticNode reconciler)
+The BMC layer is selected per node from inventory (`bmc.type: amt`, `redfish`,
+or `idrac`), so mixed hardware can share one workflow.
 
-`cmd/nightwatch-operator` is a leader-elected controller that runs on the
-**management** cluster and reconciles `ElasticNode` CRs (`api/v1alpha1`) toward
-`spec.desiredPower` (`On`/`Off`, default `On`). Each loop reads the live state -
-BMC power and the target node's Ready/GPU status - then drives the
-`lifecycle.DrainShutdown` / `lifecycle.PowerOn` state machines to converge.
-`status` is observability only; it never feeds back into the next decision.
+## Ways To Run It
 
-It uses two Kubernetes clients: one for the management cluster (where the CRs
-live) and a separate target-cluster client (from the `Backends` provider) for the
-cordon/drain/Ready/GPU checks on the cluster being scaled.
+- **Operator**: the primary workflow. A management cluster runs
+  `nightwatch-operator`, which reconciles `ElasticNode` resources toward
+  `spec.desiredPower: On|Off`.
+- **CLI**: direct `drain-shutdown` and `wake` commands for manual operation or
+  testing.
+- **HTTP API**: `nightwatch serve` exposes the same lifecycle path behind a
+  bearer token for schedulers or CronJobs.
 
-CRD + RBAC manifests are in `config/`. The cross-cluster `Backends` provider
-(`internal/controller/provider.go`) builds the target-cluster client and the
-per-node BMC/Talos/iSCSI adapters from the inventory ConfigMap + credentials Secret.
+The lifecycle code is shared across all three entry points, so the operator,
+CLI, and API converge through the same safety gates.
 
-### Observability
+## Quick Orientation
 
-The operator serves standard controller-runtime + Go runtime metrics on
-`--metrics-bind-address` (default `:8080`); it registers no custom metrics. A
-portable Grafana dashboard for these is in [`dashboards/`](dashboards/) — see
-[`dashboards/README.md`](dashboards/README.md). It binds to any Prometheus via
-template variables and carries no cluster-specific labels.
+```yaml
+nodes:
+  node-1:
+    elastic_eligible: true
+    talos_endpoint: "192.0.2.10"
+    iscsi_initiator_addr: "192.0.2.10"
+    kube_node_name: node-1
+    bmc:
+      type: amt
+      host: "192.0.2.1"
+    gpus:
+      - example-gpu
+```
 
-## HTTP trigger API (`serve`)
+See [examples/nodes.yml](examples/nodes.yml) for a fuller inventory example.
 
-`nightwatch serve` exposes the same drain-shutdown / wake / status path the CLI
-drives (shared `internal/operate` layer) so a remote scheduler or CronJob can
-POST to drive the actuator.
+Manifests for the operator CRD and RBAC live in [config/](config/). The operator
+serves standard controller-runtime and Go runtime metrics, and a portable
+Grafana dashboard is available in [dashboards/](dashboards/).
 
-- `--listen` (env `NIGHTWATCH_LISTEN`, default `:8080`).
-- **Auth fails closed**: `NIGHTWATCH_API_TOKEN` must be set or `serve` refuses to
-  start (the endpoint can power off nodes). Every `/v1/*` request needs
-  `Authorization: Bearer <token>` (constant-time compared); `/healthz` is open.
-- One named node per request; no broadcast.
+## Documentation
 
-| Method + path | Body (optional) | Result |
-| --- | --- | --- |
-| `POST /v1/nodes/{node}/drain-shutdown` | `{forceBmcOff?, dryRun?}` | `200 {ok,node,steps[]}` · `404` unknown · `409` op stopped · `500` assembly |
-| `POST /v1/nodes/{node}/wake` | `{skipGpuWait?, dryRun?}` | as above (final step `uncordon`) |
-| `GET /v1/nodes/{node}/status` | - | `{node,bmcPower,reachable?}` (best-effort) |
-| `GET /healthz` | - | `200` |
+- [Operator workflow](docs/operator.md): CRD behavior, management-vs-target
+  cluster wiring, inventory, credentials, BMC drivers, and observability.
+- [HTTP trigger API](docs/http-api.md): endpoints, auth, request behavior, and
+  operational notes.
+- [Images and releases](docs/releases.md): published images, tag semantics, and
+  digest pinning.
+- [Testing](docs/testing.md): unit tests, protocol simulators, integration tests,
+  and the Docker Compose path.
+- [Dashboards](dashboards/README.md): importing and wiring the portable Grafana
+  dashboard.
 
-Lifecycle ops run **synchronously** inside the request (a drain takes minutes),
-so the server write timeout is generous (20m) and the caller must set a matching
-long client timeout. SIGINT/SIGTERM drains in-flight requests, then exits.
+## Development
 
-## Tests
+```sh
+make test
+make test-integration
+```
 
-### Unit tests (`make test`)
-
-Fast, no network. Real adapter clients run against in-process fakes and golden
-fixtures:
-
-- **AMT** - golden SOAP/XML fixtures for the WS-Man wire format
-  (`internal/bmc/amtwsman/testdata`).
-- **Redfish/iDRAC** - the real client parses canned iDRAC Redfish responses
-  (`internal/bmc/redfish/testdata`): power state, the reset action, URL handling.
-
-### Integration tests (`make test-integration`)
-
-`go test -tags=integration ./...`. The **real** adapter clients talk to protocol
-simulators (`internal/sim`), so the actual wire code runs end to end against an
-in-memory backend. No hardware, privileges, or egress - the sims bind loopback,
-and the `integration` build tag keeps this out of `make test`.
-
-- **TrueNAS** (`internal/sim/truenas.go`) - a `wss://` JSON-RPC 2.0 server with a
-  self-signed cert. The real client logs in over TLS and its session table feeds
-  the real `iscsi.Gate`; dropping a session makes the gate report clear.
-  Inventory sets the TrueNAS match identity with `iscsi_initiator_addr`, which
-  corresponds to the session `initiator_addr`; it is separate from
-  `talos_endpoint`.
-- **AMT** (`internal/sim/amt.go`) - a WS-Man HTTP server with digest auth and
-  in-memory power state. The real client reads power via Enumerate->Pull and
-  flips it through the digest challenge/retry path.
-- **Full loop** - `lifecycle.DrainShutdown` end to end against the TrueNAS + AMT
-  sims, with in-process fakes for Kubernetes and Talos, asserting power ends off
-  and the storage gate is clear.
-
-Redfish has no sim yet, so it isn't in the integration loop (see Roadmap); its
-unit tests cover the same client code paths against fixtures.
-
-### Container path (`make test-compose`)
-
-Brings the sims up as containers (`docker-compose.test.yml`, built from
-`Dockerfile.sim`) and runs the `TestCompose*` tests against them over the Docker
-network. These skip unless `NIGHTWATCH_SIM_TRUENAS` / `NIGHTWATCH_SIM_AMT` are
-set, so `make test-integration` is unaffected.
+Both paths run without real hardware. Integration tests drive the real adapter
+clients against in-process protocol simulators.
 
 ## Roadmap
 
 Known gaps:
 
-- **Talos gRPC sim.** The full-loop test uses an in-process Talos fake; a real
-  mTLS gRPC sim (needs CA + cert machinery) is a follow-up.
+- Talos gRPC simulator. The full-loop test currently uses an in-process Talos
+  fake; a real mTLS gRPC simulator needs CA and certificate machinery.
+- Redfish integration simulator. Redfish/iDRAC is covered by fixture-backed unit
+  tests today.
 
 Possible additions:
 
-- More BMC drivers behind the same `bmc.type` registry: HPE iLO and other Redfish
-  variants, IPMI, plus a Redfish integration sim.
-- **Wake-on-LAN** as a power-on path for nodes without a usable BMC.
+- More BMC drivers behind the same `bmc.type` registry, such as HPE iLO, IPMI,
+  and other Redfish variants.
+- Wake-on-LAN as a power-on path for nodes without a usable BMC.
 
 ## License
 

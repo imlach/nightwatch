@@ -73,6 +73,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.finish(ctx, &en, nwv1.PhaseError, "", false, false,
 			fmt.Errorf("backends for %s: %w", node, err))
 	}
+	if be.Close != nil {
+		defer be.Close() // release the TrueNAS websocket etc. after this reconcile
+	}
 
 	// Observe the live world. The BMC power read is authoritative for up/off; the
 	// target node Ready/GPU are best-effort (a down node errors -> treated false).

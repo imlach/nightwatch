@@ -16,6 +16,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	nwv1 "github.com/imlach/nightwatch/api/v1alpha1"
+	_ "github.com/imlach/nightwatch/internal/bmc/amtwsman" // self-registers the amt driver
+	_ "github.com/imlach/nightwatch/internal/bmc/redfish"  // self-registers the redfish/idrac driver
 	"github.com/imlach/nightwatch/internal/controller"
 	"github.com/imlach/nightwatch/internal/inventory"
 	"github.com/imlach/nightwatch/internal/operate"
@@ -47,6 +49,15 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog := ctrl.Log.WithName("setup")
 
+	// Inventory is required for the operator to resolve ElasticNode requests to
+	// target endpoints and BMC drivers. Fail before advertising health if it is
+	// missing or invalid.
+	inv, err := requiredInventory(*inventoryPath)
+	if err != nil {
+		setupLog.Error(err, "unable to load inventory", "path", *inventoryPath)
+		os.Exit(1)
+	}
+
 	// Manager client → MGMT cluster (in-cluster config where the operator runs).
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -61,13 +72,6 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
-	}
-
-	// Inventory (node identity) - best-effort at boot; the stub provider doesn't
-	// require it yet, but load it so a missing file is a loud startup signal.
-	inv, invErr := inventory.LoadFile(*inventoryPath)
-	if invErr != nil {
-		setupLog.Info("inventory not loaded (provider is stubbed; wiring is the next increment)", "path", *inventoryPath, "err", invErr.Error())
 	}
 
 	// Backends provider -> target cluster + OOB adapters. Reuses the proven
@@ -116,6 +120,10 @@ func main() {
 		setupLog.Error(err, "manager exited")
 		os.Exit(1)
 	}
+}
+
+func requiredInventory(path string) (*inventory.Inventory, error) {
+	return inventory.LoadFile(path)
 }
 
 func envDefault(name, fallback string) string {

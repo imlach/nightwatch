@@ -89,6 +89,55 @@ func testHandler(t *testing.T) http.Handler {
 	return h.Routes()
 }
 
+func loadTwoNodeInv(t *testing.T) *inventory.Inventory {
+	t.Helper()
+	inv, err := inventory.Load([]byte(`
+nodes:
+  node-1:
+    talos_endpoint: "192.0.2.10"
+    kube_node_name: node-1
+    bmc: {type: amt, host: "192.0.2.1"}
+  node-2:
+    talos_endpoint: "192.0.2.11"
+    kube_node_name: node-2
+    bmc: {type: amt, host: "192.0.2.2"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inv
+}
+
+type blockingOperateBuilder struct {
+	started chan string
+	release chan struct{}
+}
+
+func newBlockingOperateBuilder() *blockingOperateBuilder {
+	return &blockingOperateBuilder{
+		started: make(chan string, 4),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingOperateBuilder) builder() operate.Builder {
+	return func(ctx context.Context, node inventory.NodeSpec, cfg operate.Config) (operate.Backends, error) {
+		b.started <- node.KubeNodeName
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return operate.Backends{}, ctx.Err()
+		}
+		power := &fakePower{on: true}
+		return operate.Backends{
+			Nodes:   fakeNodes{},
+			Talos:   &fakeTalos{power: power},
+			Power:   power,
+			Storage: lifecycle.StorageGateFunc(func(context.Context, time.Duration) error { return nil }),
+		}, nil
+	}
+}
+
 func req(method, path, body, bearer string) *http.Request {
 	var r *http.Request
 	if body != "" {
@@ -177,6 +226,94 @@ func TestDrainShutdownDryRun(t *testing.T) {
 	if !resp.OK || len(resp.Steps) != 0 {
 		t.Errorf("dry-run should be ok with no steps, got %+v", resp)
 	}
+}
+
+func TestActuatorRejectsConcurrentSameNodeRequest(t *testing.T) {
+	blocking := newBlockingOperateBuilder()
+	h := (&Handler{Inv: loadInv(t), Token: token, Builder: blocking.builder()}).Routes()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req("POST", "/v1/nodes/node-1/drain-shutdown", "", token))
+		done <- rec
+	}()
+
+	select {
+	case got := <-blocking.started:
+		if got != "node-1" {
+			t.Fatalf("started node = %q, want node-1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first actuator request did not start")
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req("POST", "/v1/nodes/node-1/wake", "", token))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("same-node concurrent actuator = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already has an actuator operation") {
+		t.Fatalf("conflict body = %s", rec.Body.String())
+	}
+
+	close(blocking.release)
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("first actuator request = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first actuator request did not finish")
+	}
+}
+
+func TestActuatorAllowsConcurrentDifferentNodes(t *testing.T) {
+	blocking := newBlockingOperateBuilder()
+	h := (&Handler{Inv: loadTwoNodeInv(t), Token: token, Builder: blocking.builder()}).Routes()
+
+	done1 := make(chan *httptest.ResponseRecorder, 1)
+	done2 := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req("POST", "/v1/nodes/node-1/drain-shutdown", "", token))
+		done1 <- rec
+	}()
+	if got := waitStarted(t, blocking.started); got != "node-1" {
+		t.Fatalf("first started node = %q, want node-1", got)
+	}
+
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req("POST", "/v1/nodes/node-2/drain-shutdown", "", token))
+		done2 <- rec
+	}()
+	if got := waitStarted(t, blocking.started); got != "node-2" {
+		t.Fatalf("second started node = %q, want node-2", got)
+	}
+
+	close(blocking.release)
+	for name, done := range map[string]chan *httptest.ResponseRecorder{"node-1": done1, "node-2": done2} {
+		select {
+		case rec := <-done:
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s actuator request = %d, want 200; body=%s", name, rec.Code, rec.Body.String())
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s actuator request did not finish", name)
+		}
+	}
+}
+
+func waitStarted(t *testing.T, ch <-chan string) string {
+	t.Helper()
+	select {
+	case node := <-ch:
+		return node
+	case <-time.After(time.Second):
+		t.Fatal("actuator request did not start")
+	}
+	return ""
 }
 
 func TestWakeHappyPath(t *testing.T) {

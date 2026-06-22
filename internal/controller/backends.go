@@ -20,7 +20,14 @@ type Backends interface {
 	// BackendsFor returns the lifecycle backends for the named node. node is the
 	// ElasticNode object name (which equals the kube node name unless the
 	// inventory remaps it). Errors are transient - the reconciler requeues.
-	BackendsFor(ctx context.Context, node string) (*NodeBackends, error)
+	BackendsFor(ctx context.Context, ref BackendRef) (*NodeBackends, error)
+}
+
+// BackendRef identifies the target node and cluster requested by one
+// ElasticNode. Cluster is empty for the provider's default target.
+type BackendRef struct {
+	Node    string
+	Cluster string
 }
 
 // NodeBackends bundles everything the reconciler needs to drive one node both

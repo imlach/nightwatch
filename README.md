@@ -96,6 +96,9 @@ and the `integration` build tag keeps this out of `make test`.
 - **TrueNAS** (`internal/sim/truenas.go`) - a `wss://` JSON-RPC 2.0 server with a
   self-signed cert. The real client logs in over TLS and its session table feeds
   the real `iscsi.Gate`; dropping a session makes the gate report clear.
+  Inventory sets the TrueNAS match identity with `iscsi_initiator_addr`, which
+  corresponds to the session `initiator_addr`; it is separate from
+  `talos_endpoint`.
 - **AMT** (`internal/sim/amt.go`) - a WS-Man HTTP server with digest auth and
   in-memory power state. The real client reads power via Enumerate->Pull and
   flips it through the digest challenge/retry path.

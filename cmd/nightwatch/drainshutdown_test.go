@@ -13,15 +13,17 @@ const testInvYAML = `
 nodes:
   node-1:
     talos_endpoint: "192.0.2.10"
+    iscsi_initiator_addr: "198.51.100.10"
     kube_node_name: node-1
     bmc: {type: amt, host: "192.0.2.1"}
 `
 
 func testNode() inventory.NodeSpec {
 	return inventory.NodeSpec{
-		KubeNodeName:  "node-1",
-		TalosEndpoint: "192.0.2.10",
-		BMC:           inventory.BMCConfig{Type: "amt", Host: "192.0.2.1"},
+		KubeNodeName:       "node-1",
+		TalosEndpoint:      "192.0.2.10",
+		ISCSIInitiatorAddr: "198.51.100.10",
+		BMC:                inventory.BMCConfig{Type: "amt", Host: "192.0.2.1"},
 	}
 }
 
@@ -48,11 +50,26 @@ func TestDrainShutdownPlanShowsGateAndHidesKey(t *testing.T) {
 	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
 	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-supersecret")
 	plan := drainShutdownPlan("wkr-01", "node-1", testNode(), drainShutdownConfig{})
-	if !strings.Contains(plan, "initiator_addr=192.0.2.10") {
-		t.Errorf("plan should match the gate on the node IP:\n%s", plan)
+	if !strings.Contains(plan, "initiator_addr=198.51.100.10") {
+		t.Errorf("plan should match the gate on the explicit storage identity:\n%s", plan)
+	}
+	if strings.Contains(plan, "initiator_addr=192.0.2.10") {
+		t.Errorf("plan must not use talos_endpoint as the storage identity:\n%s", plan)
 	}
 	if strings.Contains(plan, "3-supersecret") {
 		t.Errorf("plan must not leak the api key:\n%s", plan)
+	}
+}
+
+func TestDrainShutdownPlanShowsMissingGateIdentity(t *testing.T) {
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-supersecret")
+	node := testNode()
+	node.ISCSIInitiatorAddr = ""
+	plan := drainShutdownPlan("wkr-01", "node-1", node, drainShutdownConfig{})
+	if !strings.Contains(plan, "missing iscsi_initiator_addr") {
+		t.Errorf("plan should flag a missing storage gate identity:\n%s", plan)
 	}
 }
 

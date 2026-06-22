@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/imlach/nightwatch/internal/bmc"
@@ -160,9 +161,9 @@ func powerOnTalos(t lifecycle.TalosShutdown) lifecycle.TalosReachable {
 
 // RealBuilder wires the live backends for one node: k8s from kubeconfig, the
 // Talos machine API, the per-node BMC adapter, and (when TrueNAS creds are in
-// env) the iSCSI session gate bound to the node's fabric IP.
+// env) the iSCSI session gate bound to the node's explicit inventory identity.
 func RealBuilder(ctx context.Context, node inventory.NodeSpec, cfg Config) (Backends, error) {
-	storage, closeStorage, err := BuildStorageGate(ctx, node.TalosEndpoint)
+	storage, closeStorage, err := BuildStorageGate(ctx, StorageGateIdentity(node))
 	if err != nil {
 		return Backends{}, fmt.Errorf("storage gate: %w", err)
 	}
@@ -202,17 +203,23 @@ func RealBuilder(ctx context.Context, node inventory.NodeSpec, cfg Config) (Back
 	}, nil
 }
 
+// StorageGateIdentity returns the explicit inventory identity used to match the
+// node in the TrueNAS iSCSI session table. TrueNAS exposes the stable fabric IP
+// as initiator_addr; TalosEndpoint is deliberately not a fallback.
+func StorageGateIdentity(node inventory.NodeSpec) string {
+	return strings.TrimSpace(node.ISCSIInitiatorAddr)
+}
+
 // BuildStorageGate wires the TrueNAS iSCSI session gate from env, bound to the
-// node's fabric IP (initiator_addr - stable across reimage; the Talos initiator
-// IQN is regenerated, so we deliberately don't key on it). Returns a nil gate
-// when TrueNAS creds are unset, so the state machine skips the gate.
+// node's explicit storage identity. Returns a nil gate when TrueNAS creds are
+// unset, so the state machine skips the gate.
 func BuildStorageGate(ctx context.Context, gateToken string) (lifecycle.StorageGate, func(), error) {
 	host, user, key := TrueNASEnv()
 	if host == "" || user == "" || key == "" {
 		return nil, nil, nil
 	}
 	if gateToken == "" {
-		return nil, nil, fmt.Errorf("node has no talos_endpoint to match iscsi sessions on")
+		return nil, nil, fmt.Errorf("node has no storage gate identity (iscsi_initiator_addr) to match iscsi sessions on")
 	}
 	tn, err := truenas.New(ctx, host, user, key)
 	if err != nil {

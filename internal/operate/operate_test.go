@@ -3,6 +3,7 @@ package operate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,10 +17,12 @@ const invYAML = `
 nodes:
   node-1:
     talos_endpoint: "192.0.2.10"
+    iscsi_initiator_addr: "198.51.100.10"
     kube_node_name: node-1
     bmc: {type: amt, host: "192.0.2.1"}
   node-2:
     talos_endpoint: "192.0.2.11"
+    iscsi_initiator_addr: "198.51.100.11"
     kube_node_name: node-2
     bmc: {type: amt, host: "192.0.2.2"}
     gpus: ["example-gpu"]
@@ -180,5 +183,38 @@ func TestUnknownNode(t *testing.T) {
 	}
 	if _, err := Wake(context.Background(), inv, "nope", fastCfg(), fakeBuilder(&fakeNodes{}, &fakePower{})); err == nil {
 		t.Fatal("want error for unknown node on wake")
+	}
+}
+
+func TestStorageGateIdentityUsesExplicitInventoryField(t *testing.T) {
+	node := inventory.NodeSpec{
+		TalosEndpoint:      "192.0.2.10",
+		ISCSIInitiatorAddr: "198.51.100.10",
+	}
+	if got := StorageGateIdentity(node); got != "198.51.100.10" {
+		t.Fatalf("StorageGateIdentity() = %q, want explicit iscsi_initiator_addr", got)
+	}
+}
+
+func TestStorageGateIdentityDoesNotFallbackToTalosEndpoint(t *testing.T) {
+	node := inventory.NodeSpec{TalosEndpoint: "192.0.2.10"}
+	if got := StorageGateIdentity(node); got != "" {
+		t.Fatalf("StorageGateIdentity() = %q, want empty without explicit storage identity", got)
+	}
+}
+
+func TestBuildStorageGateRequiresIdentityWhenTrueNASConfigured(t *testing.T) {
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-secret")
+	sg, closeFn, err := BuildStorageGate(context.Background(), "")
+	if err == nil {
+		t.Fatal("BuildStorageGate() error = nil, want missing identity error")
+	}
+	if sg != nil || closeFn != nil {
+		t.Fatal("BuildStorageGate() should not return a gate or closer when identity is missing")
+	}
+	if got := err.Error(); !strings.Contains(got, "iscsi_initiator_addr") {
+		t.Fatalf("BuildStorageGate() error = %q, want iscsi_initiator_addr", got)
 	}
 }

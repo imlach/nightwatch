@@ -42,16 +42,19 @@ type ClusterProvider struct {
 // BackendsFor joins the ElasticNode (by node name) to the target-cluster client
 // and the OOB BMC/Talos/TrueNAS adapters, returning ready-to-drive deps. Errors
 // are transient - the reconciler surfaces PhaseError and requeues.
-func (p *ClusterProvider) BackendsFor(ctx context.Context, node string) (*NodeBackends, error) {
+func (p *ClusterProvider) BackendsFor(ctx context.Context, ref BackendRef) (*NodeBackends, error) {
+	if ref.Cluster != "" && ref.Cluster != p.Target.Name {
+		return nil, fmt.Errorf("node %q requests clusterRef %q, provider target is %q", ref.Node, ref.Cluster, p.Target.Name)
+	}
 	if p.Inventory == nil {
 		return nil, fmt.Errorf("inventory not loaded")
 	}
-	spec, ok := p.Inventory.Nodes[node]
+	spec, ok := p.Inventory.Nodes[ref.Node]
 	if !ok {
-		return nil, fmt.Errorf("node %q not in inventory", node)
+		return nil, fmt.Errorf("node %q not in inventory", ref.Node)
 	}
 	if !spec.ElasticEligible {
-		return nil, fmt.Errorf("node %q is not elastic_eligible", node)
+		return nil, fmt.Errorf("node %q is not elastic_eligible", ref.Node)
 	}
 	if p.BMCCreds != nil {
 		spec.BMC.Username, spec.BMC.Password = p.BMCCreds(spec.BMC.Type)

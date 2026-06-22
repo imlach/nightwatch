@@ -57,7 +57,7 @@ func TestBackendsForMapsAndCloses(t *testing.T) {
 		},
 	}
 
-	be, err := p.BackendsFor(context.Background(), "wkr-04")
+	be, err := p.BackendsFor(context.Background(), BackendRef{Node: "wkr-04"})
 	if err != nil {
 		t.Fatalf("BackendsFor: %v", err)
 	}
@@ -89,15 +89,16 @@ func TestBackendsForGuards(t *testing.T) {
 	cases := []struct {
 		name string
 		p    *ClusterProvider
-		node string
+		ref  BackendRef
 	}{
-		{"nil inventory", &ClusterProvider{}, "wkr-04"},
-		{"unknown node", &ClusterProvider{Inventory: provInv(true, nil)}, "nope"},
-		{"not elastic", &ClusterProvider{Inventory: provInv(false, nil)}, "wkr-04"},
+		{"nil inventory", &ClusterProvider{}, BackendRef{Node: "wkr-04"}},
+		{"unknown node", &ClusterProvider{Inventory: provInv(true, nil)}, BackendRef{Node: "nope"}},
+		{"not elastic", &ClusterProvider{Inventory: provInv(false, nil)}, BackendRef{Node: "wkr-04"}},
+		{"wrong cluster", &ClusterProvider{Target: TargetCluster{Name: "default"}, Inventory: provInv(true, nil)}, BackendRef{Node: "wkr-04", Cluster: "other"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := c.p.BackendsFor(context.Background(), c.node); err == nil {
+			if _, err := c.p.BackendsFor(context.Background(), c.ref); err == nil {
 				t.Error("expected an error, got nil")
 			}
 		})

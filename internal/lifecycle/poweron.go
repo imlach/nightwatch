@@ -49,7 +49,10 @@ type PowerOnOptions struct {
 
 // PowerOn brings a slept node back into service:
 //
-//	BMC power-on → wait Talos reachable → wait NodeReady → [wait GPU registered] → uncordon
+//	BMC power-on → [wait Talos reachable] → wait NodeReady → [wait GPU registered] → uncordon
+//
+// If no Talos reachability probe is wired, the Talos wait step is recorded as
+// skipped and readiness remains the wake gate.
 //
 // It records an operation.Step per phase and stops at the first failure WITHOUT
 // uncordoning - a node that didn't come up cleanly must stay out of service. The
@@ -78,9 +81,13 @@ func PowerOn(ctx context.Context, node string, deps PowerOnDeps, opts PowerOnOpt
 		_ = record("bmc-power-on", nil, nil)
 	}
 
-	reachable := func(ctx context.Context) (bool, error) { return deps.Talos.Reachable(ctx, opts.TalosEndpoint), nil }
-	if err := record("wait-talos-reachable", waitUntil(ctx, opts.ReachableTimeout, opts.PollInterval, "talos reachable", reachable), nil); err != nil {
-		return steps, fmt.Errorf("%s: %w", node, err)
+	if deps.Talos == nil {
+		_ = record("wait-talos-reachable", nil, map[string]any{"skipped": "talos reachability unavailable"})
+	} else {
+		reachable := func(ctx context.Context) (bool, error) { return deps.Talos.Reachable(ctx, opts.TalosEndpoint), nil }
+		if err := record("wait-talos-reachable", waitUntil(ctx, opts.ReachableTimeout, opts.PollInterval, "talos reachable", reachable), nil); err != nil {
+			return steps, fmt.Errorf("%s: %w", node, err)
+		}
 	}
 
 	ready := func(ctx context.Context) (bool, error) { return deps.Nodes.IsNodeReady(ctx, node) }

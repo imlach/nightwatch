@@ -14,15 +14,15 @@ type Inventory struct {
 }
 
 type NodeSpec struct {
-	ElasticEligible bool              `yaml:"elastic_eligible"`
-	Role            string            `yaml:"role"`
-	TalosEndpoint   string            `yaml:"talos_endpoint"`
-	KubeNodeName    string            `yaml:"kube_node_name"`
-	BMC             BMCConfig         `yaml:"bmc"`
-	WakePolicy      map[string]string `yaml:"wake_policy"`
-	Labels          map[string]string `yaml:"labels"`
-	GPUs            []string          `yaml:"gpus"`
-	ISCSIIQN        string            `yaml:"iscsi_iqn"`
+	ElasticEligible    bool              `yaml:"elastic_eligible"`
+	Role               string            `yaml:"role"`
+	TalosEndpoint      string            `yaml:"talos_endpoint"`
+	KubeNodeName       string            `yaml:"kube_node_name"`
+	BMC                BMCConfig         `yaml:"bmc"`
+	WakePolicy         map[string]string `yaml:"wake_policy"`
+	Labels             map[string]string `yaml:"labels"`
+	GPUs               []string          `yaml:"gpus"`
+	ISCSIInitiatorAddr string            `yaml:"iscsi_initiator_addr"`
 }
 
 type BMCConfig struct {

@@ -3,6 +3,7 @@ nodes:
     elastic_eligible: true
     role: gpu-worker-small
     talos_endpoint: "192.0.2.10"
+    iscsi_initiator_addr: "192.0.2.10"
     kube_node_name: node-1
     bmc:
       type: amt
@@ -17,6 +18,7 @@ nodes:
     elastic_eligible: false
     role: gpu-worker-large
     talos_endpoint: "192.0.2.11"
+    iscsi_initiator_addr: "192.0.2.11"
     kube_node_name: node-2
     bmc:
       type: redfish

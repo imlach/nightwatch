@@ -66,7 +66,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	node := en.Name // CR name is the node identity; the provider maps it onward
 
-	be, err := r.Backends.BackendsFor(ctx, node)
+	be, err := r.Backends.BackendsFor(ctx, BackendRef{Node: node, Cluster: en.Spec.ClusterRef})
 	if err != nil {
 		// Can't reach the actuators (kubeconfig/inventory/BMC) - observe nothing,
 		// surface Error, requeue. NEVER fall back to status to decide.

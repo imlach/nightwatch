@@ -62,7 +62,7 @@ func (w *fakeWorld) Uncordon(context.Context, string) error                   { 
 // fakeBackends hands the reconciler a NodeBackends wired to the shared world.
 type fakeBackends struct{ w *fakeWorld }
 
-func (b *fakeBackends) BackendsFor(ctx context.Context, node string) (*NodeBackends, error) {
+func (b *fakeBackends) BackendsFor(ctx context.Context, ref BackendRef) (*NodeBackends, error) {
 	fast := time.Millisecond
 	return &NodeBackends{
 		Power:       b.w,

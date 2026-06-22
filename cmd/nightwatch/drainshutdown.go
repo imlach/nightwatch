@@ -81,7 +81,11 @@ func buildStorageGate(ctx context.Context, gateToken string) (lifecycle.StorageG
 func drainShutdownPlan(invName, kubeName string, node inventory.NodeSpec, c drainShutdownConfig) string {
 	storage := "skipped (no TrueNAS creds in env)"
 	if host, user, key := operate.TrueNASEnv(); host != "" && user != "" && key != "" {
-		storage = fmt.Sprintf("iscsi gate via %s, match initiator_addr=%s", host, node.TalosEndpoint)
+		if id := operate.StorageGateIdentity(node); id != "" {
+			storage = fmt.Sprintf("iscsi gate via %s, match initiator_addr=%s", host, id)
+		} else {
+			storage = fmt.Sprintf("iscsi gate via %s, missing iscsi_initiator_addr", host)
+		}
 	}
 	return fmt.Sprintf("plan drain-shutdown %s\n"+
 		"  kube_node=%s talos=%s bmc=%s/%s\n"+

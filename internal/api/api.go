@@ -40,6 +40,7 @@ type Handler struct {
 	Inv     *inventory.Inventory
 	Token   string
 	Builder operate.Builder
+	locks   actuatorLocks
 
 	// Kubeconfig/Talosconfig are threaded into the per-op operate.Config.
 	Kubeconfig, Talosconfig string
@@ -136,6 +137,12 @@ func (h *Handler) drainShutdown(w http.ResponseWriter, r *http.Request) {
 		h.writeDryRun(w, node)
 		return
 	}
+	release, ok := h.locks.tryAcquire(node)
+	if !ok {
+		h.writeActuatorConflict(w, node)
+		return
+	}
+	defer release()
 	steps, err := operate.DrainShutdown(r.Context(), h.Inv, node, cfg, h.builder())
 	h.writeOpResult(w, node, steps, err)
 }
@@ -159,6 +166,12 @@ func (h *Handler) wake(w http.ResponseWriter, r *http.Request) {
 		h.writeDryRun(w, node)
 		return
 	}
+	release, ok := h.locks.tryAcquire(node)
+	if !ok {
+		h.writeActuatorConflict(w, node)
+		return
+	}
+	defer release()
 	steps, err := operate.Wake(r.Context(), h.Inv, node, cfg, h.builder())
 	h.writeOpResult(w, node, steps, err)
 }
@@ -201,6 +214,14 @@ func (h *Handler) writeDryRun(w http.ResponseWriter, node string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, opResponse{OK: true, Node: node})
+}
+
+func (h *Handler) writeActuatorConflict(w http.ResponseWriter, node string) {
+	writeJSON(w, http.StatusConflict, opResponse{
+		OK:    false,
+		Node:  node,
+		Error: fmt.Sprintf("node %q already has an actuator operation in progress", node),
+	})
 }
 
 // writeOpResult maps an operate result to the response: 200 on success; 404 for

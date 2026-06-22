@@ -9,6 +9,7 @@ nodes:
     elastic_eligible: true
     role: gpu-worker-small
     talos_endpoint: "192.0.2.10"
+    iscsi_initiator_addr: "198.51.100.10"
     kube_node_name: node-1
     bmc: {type: amt, host: "192.0.2.1"}
     wake_policy: {quiet_mode: eligible}
@@ -24,6 +25,9 @@ nodes:
 	node := inv.Nodes["node-1"]
 	if node.BMC.Type != "amt" || node.BMC.Host != "192.0.2.1" {
 		t.Fatalf("unexpected BMC config: %+v", node.BMC)
+	}
+	if node.ISCSIInitiatorAddr != "198.51.100.10" {
+		t.Fatalf("iscsi_initiator_addr = %q, want 198.51.100.10", node.ISCSIInitiatorAddr)
 	}
 }
 

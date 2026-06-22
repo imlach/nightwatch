@@ -115,6 +115,30 @@ func TestPowerOnAlreadyOnSkipsBMC(t *testing.T) {
 	}
 }
 
+func TestPowerOnNilTalosSkipsReachability(t *testing.T) {
+	p := &fakeStarter{state: bmc.PowerOff, stateOK: true, powerOnOK: true}
+	g := &fakeGater{readyAfter: 1}
+	steps, err := PowerOn(context.Background(), "node-1", PowerOnDeps{Power: p, Nodes: g}, PowerOnOptions{
+		TalosEndpoint:    "192.0.2.10",
+		ReachableTimeout: 50 * time.Millisecond,
+		ReadyTimeout:     50 * time.Millisecond,
+		PollInterval:     time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("PowerOn = %v, want nil", err)
+	}
+	if !g.uncordoned {
+		t.Error("node should still be uncordoned after readiness passes")
+	}
+	want := []string{"bmc-power-on", "wait-talos-reachable", "wait-node-ready", "wait-gpu-registered", "uncordon"}
+	if got := stepNames(steps); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("steps = %v, want %v", got, want)
+	}
+	if got := steps[1].Details["skipped"]; got != "talos reachability unavailable" {
+		t.Errorf("talos step skipped detail = %v, want talos reachability unavailable", got)
+	}
+}
+
 func TestPowerOnBMCFailsStopsBeforeUncordon(t *testing.T) {
 	p := &fakeStarter{state: bmc.PowerOff, stateOK: true, powerOnOK: false}
 	r := &fakeReach{readyAfter: 1}

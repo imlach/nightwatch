@@ -42,6 +42,14 @@ cordon/drain/Ready/GPU checks on the cluster being scaled.
 CRD + RBAC manifests are in `config/`. The cross-cluster `Backends` wiring
 (`internal/controller/provider.go`) is currently stubbed (see Roadmap).
 
+### Observability
+
+The operator serves standard controller-runtime + Go runtime metrics on
+`--metrics-bind-address` (default `:8080`); it registers no custom metrics. A
+portable Grafana dashboard for these is in [`dashboards/`](dashboards/) — see
+[`dashboards/README.md`](dashboards/README.md). It binds to any Prometheus via
+template variables and carries no cluster-specific labels.
+
 ## HTTP trigger API (`serve`)
 
 `nightwatch serve` exposes the same drain-shutdown / wake / status path the CLI

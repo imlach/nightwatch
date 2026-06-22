@@ -1,0 +1,216 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["nightwatch"],
+  "title": "Nightwatch Operator",
+  "uid": "nightwatch-operator",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(controller_runtime_reconcile_total{controller=\"elasticnode\"}, job)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {}
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Up",
+      "description": "Operator scrape target up (1 = scraped).",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "max(up{job=~\"$job\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Leader",
+      "description": "1 if this replica holds the leader-election lease.",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "max(leader_election_master_status{job=~\"$job\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "standby", "color": "yellow" }, "1": { "text": "leader", "color": "green" } } }
+          ]
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Reconcile errors (5m)",
+      "description": "Reconcile errors over the last 5m.",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(increase(controller_runtime_reconcile_errors_total{job=~\"$job\", controller=\"elasticnode\"}[5m]))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Queue depth",
+      "description": "Current controller workqueue depth.",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(workqueue_depth{job=~\"$job\", controller=\"elasticnode\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Goroutines",
+      "description": "Go runtime goroutines — a steady climb signals a leak.",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "max(go_goroutines{job=~\"$job\"})", "refId": "A" }
+      ],
+      "options": { "colorMode": "none", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Resident memory",
+      "description": "Process resident set size.",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "max(process_resident_memory_bytes{job=~\"$job\"})", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "colorMode": "none", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Reconcile rate by result",
+      "description": "controller_runtime_reconcile_total rate, split by result (success/error/requeue).",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (result) (rate(controller_runtime_reconcile_total{job=~\"$job\", controller=\"elasticnode\"}[5m]))", "legendFormat": "{{result}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Reconcile latency (p50 / p99)",
+      "description": "controller_runtime_reconcile_duration_seconds quantiles.",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{job=~\"$job\", controller=\"elasticnode\"}[5m])))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{job=~\"$job\", controller=\"elasticnode\"}[5m])))", "legendFormat": "p99", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Workqueue depth & retries",
+      "description": "workqueue_depth and the retry rate for the elasticnode queue.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(workqueue_depth{job=~\"$job\", controller=\"elasticnode\"})", "legendFormat": "depth", "refId": "A" },
+        { "expr": "sum(rate(workqueue_retries_total{job=~\"$job\", controller=\"elasticnode\"}[5m]))", "legendFormat": "retries/s", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Workqueue work duration (p99)",
+      "description": "workqueue_work_duration_seconds p99 — how long an item is processed once dequeued.",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(workqueue_work_duration_seconds_bucket{job=~\"$job\", controller=\"elasticnode\"}[5m])))", "legendFormat": "p99", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } } }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Kubernetes API requests by code",
+      "description": "rest_client_requests_total rate, split by HTTP code — spikes in 4xx/5xx flag RBAC or API issues.",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (code) (rate(rest_client_requests_total{job=~\"$job\"}[5m]))", "legendFormat": "{{code}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Process CPU & Go heap",
+      "description": "process_cpu rate and go_memstats heap in use.",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "max(rate(process_cpu_seconds_total{job=~\"$job\"}[5m]))", "legendFormat": "cpu cores", "refId": "A" },
+        { "expr": "max(go_memstats_heap_inuse_bytes{job=~\"$job\"})", "legendFormat": "heap inuse", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 0 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "heap inuse" }, "properties": [ { "id": "unit", "value": "bytes" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      }
+    }
+  ]
+}

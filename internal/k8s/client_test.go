@@ -66,11 +66,17 @@ func TestNodeHasGPUCapacity(t *testing.T) {
 func TestCordonUncordon(t *testing.T) {
 	cs := fake.NewClientset(node("n1", corev1.ConditionTrue))
 	c := New(cs)
+	if ok, err := c.IsNodeSchedulable(context.Background(), "n1"); err != nil || !ok {
+		t.Fatalf("initial schedulable = %v, %v; want true", ok, err)
+	}
 	if err := c.Cordon(context.Background(), "n1"); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := cs.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{}); !n.Spec.Unschedulable {
 		t.Fatal("want unschedulable after Cordon")
+	}
+	if ok, err := c.IsNodeSchedulable(context.Background(), "n1"); err != nil || ok {
+		t.Fatalf("cordoned schedulable = %v, %v; want false", ok, err)
 	}
 	if err := c.Uncordon(context.Background(), "n1"); err != nil {
 		t.Fatal(err)

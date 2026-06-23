@@ -61,6 +61,7 @@ func (w *fakeWorld) Reachable(context.Context, string) bool { return w.on }
 
 func (w *fakeWorld) IsNodeReady(context.Context, string) (bool, error)        { return w.on, nil }
 func (w *fakeWorld) NodeHasGPUCapacity(context.Context, string) (bool, error) { return w.on, nil }
+func (w *fakeWorld) IsNodeSchedulable(context.Context, string) (bool, error)  { return !w.cordoned, nil }
 func (w *fakeWorld) Uncordon(context.Context, string) error                   { w.cordoned = false; return nil }
 
 // fakeBackends hands the reconciler a NodeBackends wired to the shared world.
@@ -173,6 +174,28 @@ func TestReconcile_DesiredOn_PowersOnAndUncordons(t *testing.T) {
 	}
 	if !got.Status.NodeReady {
 		t.Fatalf("status.nodeReady should be true")
+	}
+}
+
+// On on an already-powered Ready node that is still cordoned must drive the
+// idempotent wake path so the final uncordon step repairs it without a power
+// cycle.
+func TestReconcile_DesiredOn_UncordonsReadyButCordoned(t *testing.T) {
+	w := &fakeWorld{on: true, cordoned: true}
+	en := newEN("node-1", nwv1.PowerOn)
+	r, c := newReconciler(t, en, w)
+
+	reconcileOnce(t, r, "node-1")
+
+	if w.powerCalls != 0 {
+		t.Fatalf("already-on node should not be power-cycled, got %d power calls", w.powerCalls)
+	}
+	if w.cordoned {
+		t.Fatalf("Ready desired-on node should be uncordoned")
+	}
+	got := getEN(t, c, "node-1")
+	if got.Status.Phase != nwv1.PhaseReady {
+		t.Fatalf("phase = %q, want Ready", got.Status.Phase)
 	}
 }
 

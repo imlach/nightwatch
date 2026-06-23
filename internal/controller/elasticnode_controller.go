@@ -80,7 +80,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Observe the live world. The BMC power read is authoritative for up/off; the
 	// target node Ready/GPU are best-effort (a down node errors -> treated false).
 	power, powerKnown := observePower(ctx, be.Power)
-	ready, gpu := observeNode(ctx, be.Gater, node)
+	ready, gpu, schedulable := observeNode(ctx, be.Gater, node)
 
 	// Direction is decided from desired vs observed, NOT from status.
 	switch desired {
@@ -101,22 +101,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	default: // PowerOn (the fail-safe target)
 		// Converged when the node is on AND Ready (and GPU-registered if expected).
-		if powerKnown && power == bmc.PowerOn && ready && (!be.PowerOnOpts.ExpectGPU || gpu) {
+		if powerKnown && power == bmc.PowerOn && ready && schedulable && (!be.PowerOnOpts.ExpectGPU || gpu) {
 			return r.finish(ctx, &en, nwv1.PhaseReady, bmc.PowerOn, true, gpu, nil)
 		}
 		// Some BMCs are less reliable than the target-cluster signal. If the BMC
 		// read is unavailable but Kubernetes already proves the node is in service,
 		// do not issue a redundant power-on that can fail or flap firmware state.
-		if !powerKnown && ready && (!be.PowerOnOpts.ExpectGPU || gpu) {
+		if !powerKnown && ready && schedulable && (!be.PowerOnOpts.ExpectGPU || gpu) {
 			return r.finish(ctx, &en, nwv1.PhaseReady, bmc.PowerOn, true, gpu, nil)
 		}
-		lg.Info("converging to On", "node", node, "observedPower", power, "ready", ready)
+		lg.Info("converging to On", "node", node, "observedPower", power, "ready", ready, "schedulable", schedulable)
 		if _, pErr := lifecycle.PowerOn(ctx, node, be.PowerOn, be.PowerOnOpts); pErr != nil {
 			return r.finish(ctx, &en, nwv1.PhasePoweringOn, power, ready, gpu,
 				fmt.Errorf("power-on %s: %w", node, pErr))
 		}
 		power, _ = observePower(ctx, be.Power)
-		ready, gpu = observeNode(ctx, be.Gater, node)
+		ready, gpu, _ = observeNode(ctx, be.Gater, node)
 		return r.finish(ctx, &en, nwv1.PhaseReady, power, ready, gpu, nil)
 	}
 }
@@ -124,9 +124,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // observeNode reads Ready + GPU from the target cluster. Errors (node down /
 // unreachable) collapse to false - the reconciler treats "can't confirm Ready"
 // as not-ready and re-drives, rather than trusting a stale belief.
-func observeNode(ctx context.Context, g lifecycle.NodeGater, node string) (ready, gpu bool) {
+func observeNode(ctx context.Context, g lifecycle.NodeGater, node string) (ready, gpu, schedulable bool) {
 	if g == nil {
-		return false, false
+		return false, false, false
 	}
 	if rdy, err := g.IsNodeReady(ctx, node); err == nil {
 		ready = rdy
@@ -134,7 +134,10 @@ func observeNode(ctx context.Context, g lifecycle.NodeGater, node string) (ready
 	if has, err := g.NodeHasGPUCapacity(ctx, node); err == nil {
 		gpu = has
 	}
-	return ready, gpu
+	if ok, err := g.IsNodeSchedulable(ctx, node); err == nil {
+		schedulable = ok
+	}
+	return ready, gpu, schedulable
 }
 
 // powerEnum maps a BMC power reading to the API enum for status only.

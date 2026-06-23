@@ -44,6 +44,7 @@ func (fakeNodes) Drain(context.Context, string, k8s.DrainOptions) error    { ret
 func (fakeNodes) Uncordon(context.Context, string) error                   { return nil }
 func (fakeNodes) IsNodeReady(context.Context, string) (bool, error)        { return true, nil }
 func (fakeNodes) NodeHasGPUCapacity(context.Context, string) (bool, error) { return true, nil }
+func (fakeNodes) IsNodeSchedulable(context.Context, string) (bool, error)  { return true, nil }
 
 type fakePower struct{ on bool }
 

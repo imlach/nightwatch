@@ -26,6 +26,7 @@ type TalosReachable interface {
 type NodeGater interface {
 	IsNodeReady(ctx context.Context, name string) (bool, error)
 	NodeHasGPUCapacity(ctx context.Context, name string) (bool, error)
+	IsNodeSchedulable(ctx context.Context, name string) (bool, error)
 	Uncordon(ctx context.Context, name string) error
 }
 

@@ -3,6 +3,8 @@ package talos
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -52,5 +54,34 @@ func TestReachable(t *testing.T) {
 func TestNewBadConfig(t *testing.T) {
 	if _, err := New(context.Background(), "/nonexistent/talosconfig"); err == nil {
 		t.Fatal("want error for a missing talosconfig")
+	}
+}
+
+func TestLoadConfigReadOnlyPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talosconfig")
+	if err := os.WriteFile(path, []byte(`
+context: default
+contexts:
+  default:
+    endpoints:
+      - 192.0.2.1
+    ca: Q0E=
+    crt: Q1JU
+    key: S0VZ
+`), 0o400); err != nil {
+		t.Fatalf("write talosconfig: %v", err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig(read-only path) = %v", err)
+	}
+	if cfg.Context != "default" {
+		t.Fatalf("context = %q, want default", cfg.Context)
 	}
 }

@@ -7,9 +7,11 @@ package talos
 import (
 	"context"
 	"fmt"
+	"os"
 
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"google.golang.org/grpc"
 )
 
@@ -33,7 +35,11 @@ type Client struct {
 // planes apid connects through) come from the config unless overridden; per-call
 // node targeting selects the worker to act on.
 func New(ctx context.Context, configPath string, endpoints ...string) (*Client, error) {
-	opts := []client.OptionFunc{client.WithConfigFromFile(configPath)}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	opts := []client.OptionFunc{client.WithConfig(cfg)}
 	if len(endpoints) > 0 {
 		opts = append(opts, client.WithEndpoints(endpoints...))
 	}
@@ -42,6 +48,18 @@ func New(ctx context.Context, configPath string, endpoints ...string) (*Client, 
 		return nil, fmt.Errorf("talos client: %w", err)
 	}
 	return &Client{mc: mc}, nil
+}
+
+func loadConfig(configPath string) (*clientconfig.Config, error) {
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config from %q: %w", configPath, err)
+	}
+	cfg, err := clientconfig.FromBytes(b)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse config from %q: %w", configPath, err)
+	}
+	return cfg, nil
 }
 
 func newWithClient(mc machineClient) *Client { return &Client{mc: mc} }

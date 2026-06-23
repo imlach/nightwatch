@@ -20,6 +20,7 @@ func (provFake) Cordon(context.Context, string) error                     { retu
 func (provFake) Drain(context.Context, string, k8s.DrainOptions) error    { return nil }
 func (provFake) IsNodeReady(context.Context, string) (bool, error)        { return true, nil }
 func (provFake) NodeHasGPUCapacity(context.Context, string) (bool, error) { return true, nil }
+func (provFake) IsNodeSchedulable(context.Context, string) (bool, error)  { return true, nil }
 func (provFake) Uncordon(context.Context, string) error                   { return nil }
 func (provFake) Shutdown(context.Context, string) error                   { return nil }
 func (provFake) Reachable(context.Context, string) bool                   { return true }

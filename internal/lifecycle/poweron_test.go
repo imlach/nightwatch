@@ -61,6 +61,10 @@ func (f *fakeGater) NodeHasGPUCapacity(context.Context, string) (bool, error) {
 	return f.gpuCalls >= f.gpuAfter, nil
 }
 
+func (f *fakeGater) IsNodeSchedulable(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeGater) Uncordon(context.Context, string) error {
 	f.uncordoned = true
 	return f.uncordonErr

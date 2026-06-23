@@ -50,6 +50,7 @@ func (f *fakeNodes) IsNodeReady(context.Context, string) (bool, error)     { ret
 func (f *fakeNodes) NodeHasGPUCapacity(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (f *fakeNodes) IsNodeSchedulable(context.Context, string) (bool, error) { return !f.cordoned, nil }
 
 // fakePower is a power adapter (bmc.Adapter) whose state follows talos shutdown.
 type fakePower struct{ on bool }

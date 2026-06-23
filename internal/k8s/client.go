@@ -63,6 +63,17 @@ func (c *Client) NodeHasGPUCapacity(ctx context.Context, name string) (bool, err
 	return false, nil
 }
 
+// IsNodeSchedulable reports whether Kubernetes is allowed to place new work on
+// the node. Ready alone is not enough after Nightwatch has cordoned before a
+// shutdown.
+func (c *Client) IsNodeSchedulable(ctx context.Context, name string) (bool, error) {
+	node, err := c.cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+	return !node.Spec.Unschedulable, nil
+}
+
 // Cordon marks the node unschedulable. Uncordon reverses it.
 func (c *Client) Cordon(ctx context.Context, name string) error {
 	return c.setUnschedulable(ctx, name, true)

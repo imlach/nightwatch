@@ -104,6 +104,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if powerKnown && power == bmc.PowerOn && ready && (!be.PowerOnOpts.ExpectGPU || gpu) {
 			return r.finish(ctx, &en, nwv1.PhaseReady, bmc.PowerOn, true, gpu, nil)
 		}
+		// Some BMCs are less reliable than the target-cluster signal. If the BMC
+		// read is unavailable but Kubernetes already proves the node is in service,
+		// do not issue a redundant power-on that can fail or flap firmware state.
+		if !powerKnown && ready && (!be.PowerOnOpts.ExpectGPU || gpu) {
+			return r.finish(ctx, &en, nwv1.PhaseReady, bmc.PowerOn, true, gpu, nil)
+		}
 		lg.Info("converging to On", "node", node, "observedPower", power, "ready", ready)
 		if _, pErr := lifecycle.PowerOn(ctx, node, be.PowerOn, be.PowerOnOpts); pErr != nil {
 			return r.finish(ctx, &en, nwv1.PhasePoweringOn, power, ready, gpu,

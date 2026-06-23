@@ -22,6 +22,7 @@ import (
 // drive against. It is the "world" the reconciler observes - never the CR status.
 type fakeWorld struct {
 	on         bool
+	powerErr   bool
 	cordoned   bool
 	drainCalls int
 	powerCalls int
@@ -30,6 +31,9 @@ type fakeWorld struct {
 // fakeWorld satisfies every lifecycle backend interface, mutating itself so the
 // real DrainShutdown / PowerOn converge it (idempotent + monotonic).
 func (w *fakeWorld) GetPowerState(context.Context) bmc.Result {
+	if w.powerErr {
+		return bmc.Result{OK: false, PowerState: bmc.PowerUnknown, Error: "bmc unavailable"}
+	}
 	st := bmc.PowerOff
 	if w.on {
 		st = bmc.PowerOn
@@ -198,6 +202,31 @@ func TestReconcile_LevelTriggered_NoopWhenConverged(t *testing.T) {
 			t.Fatalf("converged-off must not call DrainShutdown, got %d", w.drainCalls)
 		}
 	})
+}
+
+// If BMC state cannot be read but the target node is already Ready, desired=On
+// is satisfied. The controller must not issue a redundant power-on just because
+// the out-of-band read is unavailable.
+func TestReconcile_DesiredOn_BMCUnknownButNodeReady(t *testing.T) {
+	w := &fakeWorld{on: true, powerErr: true}
+	en := newEN("node-1", nwv1.PowerOn)
+	r, c := newReconciler(t, en, w)
+
+	reconcileOnce(t, r, "node-1")
+
+	if w.powerCalls != 0 {
+		t.Fatalf("ready node with unknown BMC power must not call PowerOn, got %d", w.powerCalls)
+	}
+	got := getEN(t, c, "node-1")
+	if got.Status.Phase != nwv1.PhaseReady {
+		t.Fatalf("phase = %q, want Ready", got.Status.Phase)
+	}
+	if got.Status.ObservedPower != nwv1.PowerOn {
+		t.Fatalf("observedPower = %q, want On inferred from Ready node", got.Status.ObservedPower)
+	}
+	if !got.Status.NodeReady {
+		t.Fatalf("status.nodeReady should be true")
+	}
 }
 
 // Status corruption must not change behaviour: even if status claims Ready, an

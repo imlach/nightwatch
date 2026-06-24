@@ -37,6 +37,7 @@ func main() {
 		enableLeader  = flag.Bool("leader-elect", true, "enable leader election (a mgmt-etcd Lease) for active/standby HA")
 		leaderID      = flag.String("leader-elect-id", "nightwatch-operator.nightwatch.imla.ch", "leader-election lease name")
 		resync        = flag.Duration("resync", 60*time.Second, "steady level-triggered re-derive cadence")
+		maxConcurrent = flag.Int("max-concurrent-reconciles", 4, "maximum ElasticNode reconciles to run concurrently")
 		targetName    = flag.String("target-cluster", envDefault("NIGHTWATCH_TARGET_CLUSTER", "default"), "target cluster name")
 		targetKube    = flag.String("target-kubeconfig", os.Getenv("NIGHTWATCH_TARGET_KUBECONFIG"), "target-cluster kubeconfig (used by the Backends provider, NOT the manager)")
 		targetTalos   = flag.String("target-talosconfig", os.Getenv("NIGHTWATCH_TARGET_TALOSCONFIG"), "target-cluster talosconfig")
@@ -98,9 +99,10 @@ func main() {
 	}
 
 	if err := (&controller.Reconciler{
-		Client:   mgr.GetClient(),
-		Backends: backends,
-		Resync:   *resync,
+		Client:                  mgr.GetClient(),
+		Backends:                backends,
+		Resync:                  *resync,
+		MaxConcurrentReconciles: *maxConcurrent,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ElasticNode")
 		os.Exit(1)

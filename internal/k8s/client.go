@@ -8,6 +8,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -103,6 +104,7 @@ type DrainOptions struct {
 // "wait until gone" is what makes this safe to chain before an iSCSI gate +
 // power-off - `kubectl drain` returns on eviction, not on termination.
 func (c *Client) Drain(ctx context.Context, node string, opts DrainOptions) error {
+	started := time.Now()
 	poll := opts.PollInterval
 	if poll <= 0 {
 		poll = 2 * time.Second
@@ -132,10 +134,27 @@ func (c *Client) Drain(ctx context.Context, node string, opts DrainOptions) erro
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("drain %s: pods still present after %s: %w", node, timeout, ctx.Err())
+			return fmt.Errorf("drain %s: pods still present after %s (timeout %s): %s: %w", node, time.Since(started).Round(time.Second), timeout, podRefs(pods, 8), ctx.Err())
 		case <-time.After(poll):
 		}
 	}
+}
+
+func podRefs(pods []corev1.Pod, limit int) string {
+	if len(pods) == 0 {
+		return "none"
+	}
+	if limit <= 0 || limit > len(pods) {
+		limit = len(pods)
+	}
+	refs := make([]string, 0, limit+1)
+	for i := 0; i < limit; i++ {
+		refs = append(refs, pods[i].Namespace+"/"+pods[i].Name)
+	}
+	if remaining := len(pods) - limit; remaining > 0 {
+		refs = append(refs, fmt.Sprintf("+%d more", remaining))
+	}
+	return strings.Join(refs, ",")
 }
 
 func (c *Client) evictablePods(ctx context.Context, node string) ([]corev1.Pod, error) {

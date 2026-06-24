@@ -69,7 +69,7 @@ spec:
               properties:
                 phase:
                   type: string
-                  enum: [Ready, Draining, Off, PoweringOn, Error]
+                  enum: [Ready, Draining, Blocked, Off, PoweringOn, Error]
                 observedPower:
                   type: string
                   enum: [On, Off]

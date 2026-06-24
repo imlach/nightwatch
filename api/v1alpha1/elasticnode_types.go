@@ -17,12 +17,13 @@ const (
 
 // Phase is the coarse observed lifecycle state, for observability only - never
 // read back to decide what to do next (level-triggered invariant).
-// +kubebuilder:validation:Enum=Ready;Draining;Off;PoweringOn;Error
+// +kubebuilder:validation:Enum=Ready;Draining;Blocked;Off;PoweringOn;Error
 type Phase string
 
 const (
 	PhaseReady      Phase = "Ready"
 	PhaseDraining   Phase = "Draining"
+	PhaseBlocked    Phase = "Blocked"
 	PhaseOff        Phase = "Off"
 	PhasePoweringOn Phase = "PoweringOn"
 	PhaseError      Phase = "Error"

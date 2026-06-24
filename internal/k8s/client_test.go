@@ -2,11 +2,13 @@ package k8s
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -149,5 +151,20 @@ func TestDrainEvictsAndWaits(t *testing.T) {
 	}
 	if !present["inference/app2"] {
 		t.Error("pod on another node must be untouched")
+	}
+}
+
+func TestDrainTimeoutNamesRemainingPods(t *testing.T) {
+	cs := fake.NewClientset(pod("monitoring", "prometheus-1", "node-1"))
+	cs.PrependReactor("create", "pods/eviction", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewTooManyRequests("pdb blocked", 1)
+	})
+
+	err := New(cs).Drain(context.Background(), "node-1", DrainOptions{PollInterval: time.Millisecond, Timeout: 5 * time.Millisecond})
+	if err == nil {
+		t.Fatal("Drain = nil, want timeout")
+	}
+	if !strings.Contains(err.Error(), "monitoring/prometheus-1") {
+		t.Fatalf("Drain error = %q, want remaining pod name", err)
 	}
 }

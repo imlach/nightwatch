@@ -15,6 +15,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -22,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	nwv1 "github.com/imlach/nightwatch/api/v1alpha1"
@@ -39,6 +41,15 @@ type Reconciler struct {
 
 	// Resync is the steady re-derive cadence; defaults to defaultResync.
 	Resync time.Duration
+
+	// IntentPoll is how often a long-running operation re-reads the ElasticNode
+	// spec so an operator can abort a drain/wake by changing desiredPower.
+	IntentPoll time.Duration
+
+	// MaxConcurrentReconciles bounds per-node parallelism inside the singleton
+	// operator. controller-runtime still serializes by workqueue key, but separate
+	// ElasticNodes must not block each other behind one slow drain.
+	MaxConcurrentReconciles int
 
 	// Now is an injectable clock for transition timestamps (defaults to time.Now).
 	Now func() time.Time
@@ -91,8 +102,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return r.finish(ctx, &en, nwv1.PhaseOff, bmc.PowerOff, false, false, nil)
 		}
 		lg.Info("converging to Off", "node", node, "observedPower", power)
-		if _, dErr := lifecycle.DrainShutdown(ctx, node, be.Drain, be.DrainOpts); dErr != nil {
-			return r.finish(ctx, &en, nwv1.PhaseDraining, power, ready, gpu,
+		opCtx, desiredChanged, stop := r.cancelOnDesiredChange(ctx, client.ObjectKeyFromObject(&en), desired)
+		defer stop()
+		if _, dErr := lifecycle.DrainShutdown(opCtx, node, be.Drain, be.DrainOpts); dErr != nil {
+			if desiredChanged() {
+				lg.Info("desiredPower changed during Off reconcile; requeueing", "node", node)
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return r.finish(ctx, &en, nwv1.PhaseBlocked, power, ready, gpu,
 				fmt.Errorf("drain-shutdown %s: %w", node, dErr))
 		}
 		// Re-read so status reflects the world we just changed.
@@ -111,7 +128,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return r.finish(ctx, &en, nwv1.PhaseReady, bmc.PowerOn, true, gpu, nil)
 		}
 		lg.Info("converging to On", "node", node, "observedPower", power, "ready", ready, "schedulable", schedulable)
-		if _, pErr := lifecycle.PowerOn(ctx, node, be.PowerOn, be.PowerOnOpts); pErr != nil {
+		opCtx, desiredChanged, stop := r.cancelOnDesiredChange(ctx, client.ObjectKeyFromObject(&en), desired)
+		defer stop()
+		if _, pErr := lifecycle.PowerOn(opCtx, node, be.PowerOn, be.PowerOnOpts); pErr != nil {
+			if desiredChanged() {
+				lg.Info("desiredPower changed during On reconcile; requeueing", "node", node)
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return r.finish(ctx, &en, nwv1.PhasePoweringOn, power, ready, gpu,
 				fmt.Errorf("power-on %s: %w", node, pErr))
 		}
@@ -119,6 +142,41 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		ready, gpu, _ = observeNode(ctx, be.Gater, node)
 		return r.finish(ctx, &en, nwv1.PhaseReady, power, ready, gpu, nil)
 	}
+}
+
+func (r *Reconciler) cancelOnDesiredChange(ctx context.Context, key client.ObjectKey, desired nwv1.PowerState) (context.Context, func() bool, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	var changed atomic.Bool
+	poll := r.intentPoll()
+	go func() {
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				var latest nwv1.ElasticNode
+				if err := r.Get(ctx, key, &latest); err != nil {
+					if apierrors.IsNotFound(err) {
+						changed.Store(true)
+						cancel()
+					}
+					continue
+				}
+				latestDesired := latest.Spec.DesiredPower
+				if latestDesired == "" {
+					latestDesired = nwv1.PowerOn
+				}
+				if latestDesired != desired {
+					changed.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, changed.Load, cancel
 }
 
 // observeNode reads Ready + GPU from the target cluster. Errors (node down /
@@ -263,6 +321,20 @@ func (r *Reconciler) resync() time.Duration {
 	return defaultResync
 }
 
+func (r *Reconciler) intentPoll() time.Duration {
+	if r.IntentPoll > 0 {
+		return r.IntentPoll
+	}
+	return 2 * time.Second
+}
+
+func (r *Reconciler) maxConcurrentReconciles() int {
+	if r.MaxConcurrentReconciles > 0 {
+		return r.MaxConcurrentReconciles
+	}
+	return 4
+}
+
 func (r *Reconciler) now() time.Time {
 	if r.Now != nil {
 		return r.Now()
@@ -275,5 +347,6 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&nwv1.ElasticNode{}).
 		Named("elasticnode").
+		WithOptions(crcontroller.Options{MaxConcurrentReconciles: r.maxConcurrentReconciles()}).
 		Complete(r)
 }

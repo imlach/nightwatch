@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,10 @@ type fakeWorld struct {
 	cordoned   bool
 	drainCalls int
 	powerCalls int
+
+	drainBlock       bool
+	drainStarted     chan struct{}
+	drainStartedOnce sync.Once
 }
 
 // fakeWorld satisfies every lifecycle backend interface, mutating itself so the
@@ -51,8 +56,16 @@ func (w *fakeWorld) PowerOn(context.Context) bmc.Result {
 }
 
 func (w *fakeWorld) Cordon(context.Context, string) error { w.cordoned = true; return nil }
-func (w *fakeWorld) Drain(context.Context, string, k8s.DrainOptions) error {
+
+func (w *fakeWorld) Drain(ctx context.Context, _ string, _ k8s.DrainOptions) error {
 	w.drainCalls++
+	if w.drainStarted != nil {
+		w.drainStartedOnce.Do(func() { close(w.drainStarted) })
+	}
+	if w.drainBlock {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -196,6 +209,49 @@ func TestReconcile_DesiredOn_UncordonsReadyButCordoned(t *testing.T) {
 	got := getEN(t, c, "node-1")
 	if got.Status.Phase != nwv1.PhaseReady {
 		t.Fatalf("phase = %q, want Ready", got.Status.Phase)
+	}
+}
+
+func TestReconcile_DesiredChangeCancelsInFlightDrain(t *testing.T) {
+	w := &fakeWorld{on: true, drainBlock: true, drainStarted: make(chan struct{})}
+	en := newEN("node-1", nwv1.PowerOff)
+	r, c := newReconciler(t, en, w)
+	r.IntentPoll = time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "node-1", Namespace: "nightwatch"}})
+		done <- err
+	}()
+
+	select {
+	case <-w.drainStarted:
+	case <-time.After(time.Second):
+		t.Fatal("drain did not start")
+	}
+	if !w.cordoned {
+		t.Fatal("drain should cordon before blocking")
+	}
+
+	latest := getEN(t, c, "node-1")
+	latest.Spec.DesiredPower = nwv1.PowerOn
+	if err := c.Update(context.Background(), latest); err != nil {
+		t.Fatalf("update desiredPower: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("in-flight drain should cancel without surfacing an operation error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconcile did not stop after desiredPower changed")
+	}
+
+	w.drainBlock = false
+	reconcileOnce(t, r, "node-1")
+	if w.cordoned {
+		t.Fatalf("desired-on follow-up reconcile should uncordon the kept-on node")
 	}
 }
 

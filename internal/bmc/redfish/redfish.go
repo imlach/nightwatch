@@ -46,19 +46,31 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+// sharedTransport is reused by every Redfish adapter. The operator rebuilds a
+// per-node adapter on every reconcile and never closes it (bmc.Adapter has no
+// Close), so a per-adapter http.Transport would leak its idle-connection pool -
+// each pooled keep-alive conn holds read/write goroutines, and with the default
+// IdleConnTimeout of 0 they never expire. One shared, bounded transport keeps
+// the pool finite and lets connections be reused across reconciles. TLS
+// verification is skipped because iDRAC ships a self-signed cert - scoped to this
+// transport only, never the process-wide default.
+var sharedTransport = &http.Transport{
+	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed iDRAC cert, scoped to this transport
+	MaxIdleConnsPerHost: 2,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // New builds a Redfish client. host may be a bare IP/host, host:port, or a full
 // URL; it is normalized to an https base. The HTTP client skips TLS verification
-// because iDRAC ships a self-signed cert - scoped to this adapter's client only.
+// because iDRAC ships a self-signed cert - scoped to the shared transport only.
 func New(host, username, password string) *Client {
 	return &Client{
 		BaseURL:  normalizeBaseURL(host),
 		Username: username,
 		Password: password,
 		HTTPClient: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Timeout:   10 * time.Second,
+			Transport: sharedTransport,
 		},
 	}
 }

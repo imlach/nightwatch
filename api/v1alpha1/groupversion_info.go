@@ -1,6 +1,9 @@
 // Package v1alpha1 holds the ElasticNode API types - the desired-power-state CRD
 // Nightwatch reconciles. The CR lives on the management cluster; the nodes it
 // describes live on a separate target cluster.
+//
+// +kubebuilder:object:generate=true
+// +groupName=nightwatch.imla.ch
 package v1alpha1
 
 import (

@@ -1,6 +1,14 @@
-.PHONY: test test-integration test-compose test-docker fmt-docker
+.PHONY: test test-integration test-compose test-docker fmt-docker generate manifests
 
 GO_IMAGE ?= golang:1.26
+CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
+
+generate:
+	$(CONTROLLER_GEN) object paths="./api/..."
+
+manifests:
+	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=nightwatch-operator-role paths="./internal/controller/..." output:rbac:artifacts:config=config/rbac
 
 # Unit tests (fast, no network/containers).
 test:

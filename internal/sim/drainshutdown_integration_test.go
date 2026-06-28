@@ -75,6 +75,15 @@ func TestDrainShutdownFullLoopAgainstSims(t *testing.T) {
 			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
 		},
 	)
+	cs.Fake.Resources = []*metav1.APIResourceList{{
+		GroupVersion: "v1",
+		APIResources: []metav1.APIResource{{
+			Name:    "pods/eviction",
+			Kind:    "Eviction",
+			Group:   "policy",
+			Version: "v1",
+		}},
+	}}
 	// Simulate the apiserver: an accepted eviction deletes the pod and detaches
 	// its iSCSI volume, clearing the node's session from the target - the real
 	// chain that lets the storage gate (which runs after drain) report clear.

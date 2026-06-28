@@ -1,9 +1,7 @@
 package amtwsman
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/xml"
@@ -14,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/icholy/digest"
 
 	"github.com/imlach/nightwatch/internal/bmc"
 )
@@ -69,13 +69,18 @@ func init() {
 }
 
 func New(host, username, password string) *Client {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if username != "" {
+		httpClient.Transport = &digest.Transport{
+			Username: username,
+			Password: password,
+		}
+	}
 	return &Client{
-		Endpoint: normalizeEndpoint(host),
-		Username: username,
-		Password: password,
-		HTTPClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		Endpoint:   normalizeEndpoint(host),
+		Username:   username,
+		Password:   password,
+		HTTPClient: httpClient,
 	}
 }
 
@@ -147,33 +152,6 @@ func (c *Client) post(ctx context.Context, action, resource, body string) (strin
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized && c.Username != "" {
-		challenge := resp.Header.Get("WWW-Authenticate")
-		_, _ = io.Copy(io.Discard, resp.Body)
-		if strings.HasPrefix(strings.ToLower(challenge), "digest ") {
-			return c.postWithDigest(ctx, httpClient, action, resource, body, challenge)
-		}
-	}
-
-	return readWSManResponse(resp)
-}
-
-func (c *Client) postWithDigest(ctx context.Context, httpClient *http.Client, action, resource, body, challenge string) (string, error) {
-	auth, err := digestAuth(c.Username, c.Password, http.MethodPost, c.Endpoint, challenge)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, strings.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	setWSManHeaders(req, action, resource)
-	req.Header.Set("Authorization", auth)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
 	return readWSManResponse(resp)
 }
 
@@ -299,91 +277,6 @@ func intendedPowerState(code int) bmc.PowerState {
 	default:
 		return bmc.PowerUnknown
 	}
-}
-
-func digestAuth(username, password, method, endpoint, challenge string) (string, error) {
-	params := parseDigestChallenge(challenge)
-	realm := params["realm"]
-	nonce := params["nonce"]
-	qop := params["qop"]
-	if realm == "" || nonce == "" {
-		return "", fmt.Errorf("unsupported digest challenge")
-	}
-	uri := "/wsman"
-	if parsed, err := url.Parse(endpoint); err == nil && parsed.RequestURI() != "" {
-		uri = parsed.RequestURI()
-	}
-	cnonce := randomHex(8)
-	nc := "00000001"
-	ha1 := md5Hex(username + ":" + realm + ":" + password)
-	ha2 := md5Hex(method + ":" + uri)
-	responseInput := ha1 + ":" + nonce + ":" + ha2
-	if strings.Contains(qop, "auth") {
-		qop = "auth"
-		responseInput = ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2
-	}
-	parts := []string{
-		`Digest username="` + username + `"`,
-		`realm="` + realm + `"`,
-		`nonce="` + nonce + `"`,
-		`uri="` + uri + `"`,
-		`response="` + md5Hex(responseInput) + `"`,
-	}
-	if qop != "" {
-		parts = append(parts, `qop=`+qop, `nc=`+nc, `cnonce="`+cnonce+`"`)
-	}
-	if opaque := params["opaque"]; opaque != "" {
-		parts = append(parts, `opaque="`+opaque+`"`)
-	}
-	return strings.Join(parts, ", "), nil
-}
-
-func parseDigestChallenge(challenge string) map[string]string {
-	challenge = strings.TrimSpace(challenge)
-	if strings.HasPrefix(strings.ToLower(challenge), "digest") {
-		challenge = strings.TrimSpace(challenge[len("Digest"):])
-	}
-	challenge = strings.TrimSpace(challenge)
-	out := map[string]string{}
-	for _, field := range splitDigestFields(challenge) {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok {
-			continue
-		}
-		out[strings.ToLower(strings.TrimSpace(key))] = strings.Trim(strings.TrimSpace(value), `"`)
-	}
-	return out
-}
-
-func splitDigestFields(s string) []string {
-	var fields []string
-	var buf bytes.Buffer
-	inQuote := false
-	for _, r := range s {
-		switch r {
-		case '"':
-			inQuote = !inQuote
-			buf.WriteRune(r)
-		case ',':
-			if inQuote {
-				buf.WriteRune(r)
-				continue
-			}
-			fields = append(fields, strings.TrimSpace(buf.String()))
-			buf.Reset()
-		default:
-			buf.WriteRune(r)
-		}
-	}
-	if buf.Len() > 0 {
-		fields = append(fields, strings.TrimSpace(buf.String()))
-	}
-	return fields
-}
-
-func md5Hex(s string) string {
-	sum := md5.Sum([]byte(s))
-	return hex.EncodeToString(sum[:])
 }
 
 func randomHex(n int) string {

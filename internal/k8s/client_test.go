@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,6 +41,35 @@ func pod(ns, name, onNode string, opts ...func(*corev1.Pod)) *corev1.Pod {
 		o(p)
 	}
 	return p
+}
+
+func withEvictionSupport(cs *fake.Clientset) *fake.Clientset {
+	cs.Fake.Resources = []*metav1.APIResourceList{{
+		GroupVersion: "v1",
+		APIResources: []metav1.APIResource{{
+			Name:    "pods/eviction",
+			Kind:    "Eviction",
+			Group:   "policy",
+			Version: "v1",
+		}},
+	}}
+	return cs
+}
+
+func daemonSet(ns, name string) *appsv1.DaemonSet {
+	return &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}
+}
+
+func daemonSetPod(ns, name, onNode, dsName string) *corev1.Pod {
+	controller := true
+	return pod(ns, name, onNode, func(p *corev1.Pod) {
+		p.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: appsv1.SchemeGroupVersion.String(),
+			Kind:       "DaemonSet",
+			Name:       dsName,
+			Controller: &controller,
+		}}
+	})
 }
 
 func TestIsNodeReady(t *testing.T) {
@@ -88,18 +118,13 @@ func TestCordonUncordon(t *testing.T) {
 	}
 }
 
-func TestIsEvictable(t *testing.T) {
+func TestSkipTerminalOrTerminatingPod(t *testing.T) {
 	terminating := pod("ns", "term", "n1", func(p *corev1.Pod) {
 		now := metav1.Now()
 		p.DeletionTimestamp = &now
 	})
 	succeeded := pod("ns", "done", "n1", func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded })
-	ds := pod("ns", "ds", "n1", func(p *corev1.Pod) {
-		p.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "d"}}
-	})
-	mirror := pod("ns", "mirror", "n1", func(p *corev1.Pod) {
-		p.Annotations = map[string]string{corev1.MirrorPodAnnotationKey: "x"}
-	})
+	failed := pod("ns", "failed", "n1", func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed })
 	tests := []struct {
 		name string
 		pod  *corev1.Pod
@@ -108,24 +133,22 @@ func TestIsEvictable(t *testing.T) {
 		{"normal", pod("ns", "app", "n1"), true},
 		{"terminating", terminating, false},
 		{"succeeded", succeeded, false},
-		{"daemonset", ds, false},
-		{"mirror", mirror, false},
+		{"failed", failed, false},
 	}
 	for _, tt := range tests {
-		if got := isEvictable(tt.pod); got != tt.want {
-			t.Errorf("isEvictable(%s) = %v, want %v", tt.name, got, tt.want)
+		if got := skipTerminalOrTerminatingPod(*tt.pod).Delete; got != tt.want {
+			t.Errorf("skipTerminalOrTerminatingPod(%s).Delete = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }
 
 func TestDrainEvictsAndWaits(t *testing.T) {
-	cs := fake.NewClientset(
+	cs := withEvictionSupport(fake.NewClientset(
 		pod("inference", "app1", "node-1"),
-		pod("kube-system", "cilium", "node-1", func(p *corev1.Pod) {
-			p.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "cilium"}}
-		}),
+		daemonSet("kube-system", "cilium"),
+		daemonSetPod("kube-system", "cilium-pod", "node-1", "cilium"),
 		pod("inference", "app2", "node-2"),
-	)
+	))
 	// Simulate the apiserver: an accepted eviction deletes the pod.
 	cs.PrependReactor("create", "pods/eviction", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		e := a.(clienttesting.CreateAction).GetObject().(*policyv1.Eviction)
@@ -146,7 +169,7 @@ func TestDrainEvictsAndWaits(t *testing.T) {
 	if present["inference/app1"] {
 		t.Error("app1 (evictable, node-1) should be gone")
 	}
-	if !present["kube-system/cilium"] {
+	if !present["kube-system/cilium-pod"] {
 		t.Error("daemonset pod must be left running")
 	}
 	if !present["inference/app2"] {
@@ -155,7 +178,7 @@ func TestDrainEvictsAndWaits(t *testing.T) {
 }
 
 func TestDrainTimeoutNamesRemainingPods(t *testing.T) {
-	cs := fake.NewClientset(pod("monitoring", "prometheus-1", "node-1"))
+	cs := withEvictionSupport(fake.NewClientset(pod("monitoring", "prometheus-1", "node-1")))
 	cs.PrependReactor("create", "pods/eviction", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewTooManyRequests("pdb blocked", 1)
 	})
@@ -164,7 +187,7 @@ func TestDrainTimeoutNamesRemainingPods(t *testing.T) {
 	if err == nil {
 		t.Fatal("Drain = nil, want timeout")
 	}
-	if !strings.Contains(err.Error(), "monitoring/prometheus-1") {
-		t.Fatalf("Drain error = %q, want remaining pod name", err)
+	if !strings.Contains(err.Error(), "monitoring") || !strings.Contains(err.Error(), "prometheus-1") {
+		t.Fatalf("Drain error = %q, want remaining pod namespace and name", err)
 	}
 }

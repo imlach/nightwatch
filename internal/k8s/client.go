@@ -1,23 +1,19 @@
 // Package k8s wraps the subset of the Kubernetes API Nightwatch needs to gate a
 // node in and out of service: readiness / GPU-registration checks, cordon, and a
-// real drain that waits for pods to actually terminate (not just for evictions
-// to be issued). It is the in-code replacement for the hand-run `kubectl drain`
-// used during the BMC spike.
+// drain backed by kubectl's upstream drain helper.
 package k8s
 
 import (
 	"context"
 	"fmt"
-	"strings"
+	"io"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	kubedrain "k8s.io/kubectl/pkg/drain"
 )
 
 // Client is a thin wrapper over a Kubernetes clientset.
@@ -93,18 +89,16 @@ func (c *Client) setUnschedulable(ctx context.Context, name string, v bool) erro
 // DrainOptions tunes a drain.
 type DrainOptions struct {
 	GracePeriodSeconds *int64        // nil → pod's terminationGracePeriodSeconds
-	PollInterval       time.Duration // default 2s
+	PollInterval       time.Duration // retry delay after PDB/eviction errors; default 2s
 	Timeout            time.Duration // default 5m
 }
 
-// Drain evicts every evictable pod on the node via the eviction API (so PDBs are
-// respected) and blocks until none remain. DaemonSet-managed, mirror/static, and
-// already-terminal pods are left alone. A PDB-blocked eviction (HTTP 429) is
-// tolerated and retried on the next poll rather than failing the drain. The
-// "wait until gone" is what makes this safe to chain before an iSCSI gate +
-// power-off - `kubectl drain` returns on eviction, not on termination.
+// Drain evicts every evictable pod on the node via kubectl's drain helper, so
+// PDBs, DaemonSet pods, mirror/static pods, unmanaged pods, emptyDir pods, and
+// deletion waiting follow upstream kubectl behavior. Nightwatch keeps terminal
+// or already-terminating pods out of the drain set so a stale completed pod does
+// not block the iSCSI gate + power-off path.
 func (c *Client) Drain(ctx context.Context, node string, opts DrainOptions) error {
-	started := time.Now()
 	poll := opts.PollInterval
 	if poll <= 0 {
 		poll = 2 * time.Second
@@ -113,95 +107,45 @@ func (c *Client) Drain(ctx context.Context, node string, opts DrainOptions) erro
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	grace := -1 // kubectl/pkg/drain uses negative to preserve each pod's grace period.
+	if opts.GracePeriodSeconds != nil {
+		grace = int(*opts.GracePeriodSeconds)
+	}
 
-	for {
-		pods, err := c.evictablePods(ctx, node)
-		if err != nil {
-			return err
+	drainer := &kubedrain.Helper{
+		Ctx:                             ctx,
+		Client:                          c.cs,
+		Force:                           true,
+		GracePeriodSeconds:              grace,
+		IgnoreAllDaemonSets:             true,
+		Timeout:                         timeout,
+		DeleteEmptyDirData:              true,
+		EvictErrorRetryDelay:            poll,
+		Out:                             io.Discard,
+		ErrOut:                          io.Discard,
+		AdditionalFilters:               []kubedrain.PodFilter{sameNodeFilter(node), skipTerminalOrTerminatingPod},
+		SkipWaitForDeleteTimeoutSeconds: 0,
+	}
+	if err := kubedrain.RunNodeDrain(drainer, node); err != nil {
+		return fmt.Errorf("drain %s: %w", node, err)
+	}
+	return nil
+}
+
+func sameNodeFilter(node string) kubedrain.PodFilter {
+	return func(pod corev1.Pod) kubedrain.PodDeleteStatus {
+		// Real API servers apply the field selector in kubectl's pod list. Fake
+		// clients do not, so keep tests honest with the same check here.
+		if pod.Spec.NodeName != node {
+			return kubedrain.MakePodDeleteStatusSkip()
 		}
-		if len(pods) == 0 {
-			return nil
-		}
-		for i := range pods {
-			if err := c.evict(ctx, &pods[i], opts.GracePeriodSeconds); err != nil {
-				// 429 → PDB currently blocks it; NotFound → already gone. Both retry.
-				if !apierrors.IsTooManyRequests(err) && !apierrors.IsNotFound(err) {
-					return fmt.Errorf("evict %s/%s: %w", pods[i].Namespace, pods[i].Name, err)
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("drain %s: pods still present after %s (timeout %s): %s: %w", node, time.Since(started).Round(time.Second), timeout, podRefs(pods, 8), ctx.Err())
-		case <-time.After(poll):
-		}
+		return kubedrain.MakePodDeleteStatusOkay()
 	}
 }
 
-func podRefs(pods []corev1.Pod, limit int) string {
-	if len(pods) == 0 {
-		return "none"
+func skipTerminalOrTerminatingPod(pod corev1.Pod) kubedrain.PodDeleteStatus {
+	if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return kubedrain.MakePodDeleteStatusSkip()
 	}
-	if limit <= 0 || limit > len(pods) {
-		limit = len(pods)
-	}
-	refs := make([]string, 0, limit+1)
-	for i := 0; i < limit; i++ {
-		refs = append(refs, pods[i].Namespace+"/"+pods[i].Name)
-	}
-	if remaining := len(pods) - limit; remaining > 0 {
-		refs = append(refs, fmt.Sprintf("+%d more", remaining))
-	}
-	return strings.Join(refs, ",")
-}
-
-func (c *Client) evictablePods(ctx context.Context, node string) ([]corev1.Pod, error) {
-	list, err := c.cs.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node).String(),
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]corev1.Pod, 0, len(list.Items))
-	for i := range list.Items {
-		p := &list.Items[i]
-		// Defensive: the FieldSelector filters server-side in production, but
-		// fake clients ignore it, so confirm the node here too.
-		if p.Spec.NodeName != node {
-			continue
-		}
-		if isEvictable(p) {
-			out = append(out, *p)
-		}
-	}
-	return out, nil
-}
-
-func (c *Client) evict(ctx context.Context, pod *corev1.Pod, grace *int64) error {
-	return c.cs.PolicyV1().Evictions(pod.Namespace).Evict(ctx, &policyv1.Eviction{
-		ObjectMeta:    metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
-		DeleteOptions: &metav1.DeleteOptions{GracePeriodSeconds: grace},
-	})
-}
-
-// isEvictable reports whether drain should evict a pod: skip DaemonSet-managed,
-// mirror (static) pods, and pods already terminal or terminating.
-func isEvictable(pod *corev1.Pod) bool {
-	if pod.DeletionTimestamp != nil {
-		return false
-	}
-	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-		return false
-	}
-	if _, ok := pod.Annotations[corev1.MirrorPodAnnotationKey]; ok {
-		return false
-	}
-	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "DaemonSet" {
-			return false
-		}
-	}
-	return true
+	return kubedrain.MakePodDeleteStatusOkay()
 }

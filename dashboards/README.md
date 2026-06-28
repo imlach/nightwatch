@@ -1,18 +1,21 @@
 # Dashboards
 
-`nightwatch-operator.json` — a portable Grafana dashboard for the operator's
-**own** emitted metrics: the standard controller-runtime + Go runtime series on
-the manager's `/metrics` endpoint (`--metrics-bind-address`, default `:8080`).
-The operator exposes no custom metrics, so this covers reconcile rate/latency,
-reconcile errors, workqueue depth/retries, leader-election status, Kubernetes
-API client request codes, and process/runtime health.
+`nightwatch-operator.json` is a portable Grafana dashboard for the operator's
+own `/metrics` endpoint (`--metrics-bind-address`, default `:8080`). It uses the
+standard controller-runtime, client-go, process, and Go runtime metrics that the
+manager already exports; the operator does not currently register custom
+Nightwatch metrics.
 
-It is **cluster-agnostic**: two template variables (`datasource`, `job`) bind it
-to any Prometheus and any scrape job — there are no hardcoded endpoints,
-namespaces, or cluster labels. ElasticNode power-state, drain/wake activity, and
-anything else from the *target* cluster are deliberately out of scope here (they
-come from kube-state-metrics custom-resource-state and other cluster-specific
-sources, not the operator's metrics).
+The dashboard is cluster-agnostic. It has template variables for `datasource`,
+`job`, `namespace`, `pod`, and `controller`, and it does not hardcode endpoints,
+node names, namespaces, cluster labels, scrape jobs, or deployment-specific
+topology. The default controller value is `elasticnode`, which is the
+Nightwatch controller name rather than an environment-specific label.
+
+The panels focus on signals that are useful while operating the controller:
+scrape health, leader election, reconcile error rate and latency, workqueue
+depth/retries/stuck work, active worker saturation, Kubernetes API request
+errors, CPU, memory, goroutines, and GC pause time.
 
 ## Use
 
@@ -21,7 +24,23 @@ sources, not the operator's metrics).
   pointing at the raw file, or inlined `spec.json`).
 - **Provisioning sidecar**: drop it in a dashboards ConfigMap/folder.
 
-Scrape the operator with a ServiceMonitor/PodMonitor on the metrics port; the
-`job` variable then lists the available jobs. Requires controller-runtime
-metrics (this build uses v0.24.x: `controller_runtime_reconcile_time_seconds`,
-workqueue metrics labelled by `controller`).
+Scrape the operator with a ServiceMonitor, PodMonitor, or equivalent Prometheus
+scrape config. Pick the matching `job` after import, then narrow by `namespace`
+and `pod` if those labels are present in your Prometheus setup. Leave those
+variables on `All` for scrape configurations that do not attach Kubernetes
+metadata labels.
+
+Expected metric families:
+
+- `controller_runtime_reconcile_total`
+- `controller_runtime_reconcile_errors_total`
+- `controller_runtime_reconcile_panics_total`
+- `controller_runtime_terminal_reconcile_errors_total`
+- `controller_runtime_reconcile_timeouts_total`
+- `controller_runtime_reconcile_time_seconds_bucket`
+- `controller_runtime_active_workers`
+- `controller_runtime_max_concurrent_reconciles`
+- `workqueue_*`
+- `rest_client_requests_total`
+- `process_*`
+- `go_*`

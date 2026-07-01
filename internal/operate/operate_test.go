@@ -219,3 +219,19 @@ func TestBuildStorageGateRequiresIdentityWhenTrueNASConfigured(t *testing.T) {
 		t.Fatalf("BuildStorageGate() error = %q, want iscsi_initiator_addr", got)
 	}
 }
+
+func TestLazyStorageGateDefersIdentityErrorUntilWait(t *testing.T) {
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-secret")
+
+	gate := lazyStorageGate("")
+	if gate == nil {
+		t.Fatal("lazyStorageGate() = nil, want configured gate")
+	}
+	if err := gate.WaitDetached(context.Background(), time.Second); err == nil {
+		t.Fatal("WaitDetached() error = nil, want missing identity error")
+	} else if got := err.Error(); !strings.Contains(got, "iscsi_initiator_addr") {
+		t.Fatalf("WaitDetached() error = %q, want iscsi_initiator_addr", got)
+	}
+}

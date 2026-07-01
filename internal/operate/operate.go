@@ -161,31 +161,18 @@ func powerOnTalos(t lifecycle.TalosShutdown) lifecycle.TalosReachable {
 
 // RealBuilder wires the live backends for one node: k8s from kubeconfig, the
 // Talos machine API, the per-node BMC adapter, and (when TrueNAS creds are in
-// env) the iSCSI session gate bound to the node's explicit inventory identity.
+// env) a lazy iSCSI session gate bound to the node's explicit inventory identity.
 func RealBuilder(ctx context.Context, node inventory.NodeSpec, cfg Config) (Backends, error) {
-	storage, closeStorage, err := BuildStorageGate(ctx, StorageGateIdentity(node))
-	if err != nil {
-		return Backends{}, fmt.Errorf("storage gate: %w", err)
-	}
 	kc, err := k8s.NewFromKubeconfig(cfg.Kubeconfig)
 	if err != nil {
-		if closeStorage != nil {
-			closeStorage()
-		}
 		return Backends{}, fmt.Errorf("kube client: %w", err)
 	}
 	tc, err := talos.New(ctx, cfg.Talosconfig)
 	if err != nil {
-		if closeStorage != nil {
-			closeStorage()
-		}
 		return Backends{}, fmt.Errorf("talos client: %w", err)
 	}
 	power, err := bmc.New(node.BMC.Type, node.BMC.Host, node.BMC.Username, node.BMC.Password)
 	if err != nil {
-		if closeStorage != nil {
-			closeStorage()
-		}
 		_ = tc.Close()
 		return Backends{}, fmt.Errorf("bmc: %w", err)
 	}
@@ -193,14 +180,31 @@ func RealBuilder(ctx context.Context, node inventory.NodeSpec, cfg Config) (Back
 		Nodes:   kc,
 		Talos:   tc,
 		Power:   power,
-		Storage: storage,
+		Storage: lazyStorageGate(StorageGateIdentity(node)),
 		Close: func() {
 			_ = tc.Close()
-			if closeStorage != nil {
-				closeStorage()
-			}
 		},
 	}, nil
+}
+
+func lazyStorageGate(gateToken string) lifecycle.StorageGate {
+	host, user, key := TrueNASEnv()
+	if host == "" || user == "" || key == "" {
+		return nil
+	}
+	return lifecycle.StorageGateFunc(func(ctx context.Context, timeout time.Duration) error {
+		gate, closeGate, err := BuildStorageGate(ctx, gateToken)
+		if err != nil {
+			return err
+		}
+		if closeGate != nil {
+			defer closeGate()
+		}
+		if gate == nil {
+			return nil
+		}
+		return gate.WaitDetached(ctx, timeout)
+	})
 }
 
 // StorageGateIdentity returns the explicit inventory identity used to match the

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/imlach/nightwatch/internal/inventory"
-	"github.com/imlach/nightwatch/internal/lifecycle"
 	"github.com/imlach/nightwatch/internal/operate"
 	"github.com/imlach/nightwatch/internal/operation"
 )
@@ -69,18 +68,12 @@ func (c drainShutdownConfig) operate() operate.Config {
 	}
 }
 
-// buildStorageGate delegates to the shared operate layer (same env-driven
-// iSCSI gate the executor wires) - kept here so the CLI plan/test surface is
-// stable.
-func buildStorageGate(ctx context.Context, gateToken string) (lifecycle.StorageGate, func(), error) {
-	return operate.BuildStorageGate(ctx, gateToken)
-}
-
 // drainShutdownPlan renders the resolved plan - printed before acting and the
 // sole output of --dry-run.
 func drainShutdownPlan(invName, kubeName string, node inventory.NodeSpec, c drainShutdownConfig) string {
 	storage := "skipped (no TrueNAS creds in env)"
-	if host, user, key := operate.TrueNASEnv(); host != "" && user != "" && key != "" {
+	if operate.TrueNASConfigured() {
+		host, _, _ := operate.TrueNASEnv()
 		if id := operate.StorageGateIdentity(node); id != "" {
 			storage = fmt.Sprintf("iscsi gate via %s, match initiator_addr=%s", host, id)
 		} else {

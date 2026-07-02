@@ -204,6 +204,19 @@ func TestStorageGateIdentityDoesNotFallbackToTalosEndpoint(t *testing.T) {
 	}
 }
 
+func TestBuildStorageGateNoCreds(t *testing.T) {
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "")
+	sg, closeFn, err := BuildStorageGate(context.Background(), "198.51.100.10")
+	if err != nil {
+		t.Fatalf("BuildStorageGate() without creds err = %v, want nil", err)
+	}
+	if sg != nil || closeFn != nil {
+		t.Fatal("BuildStorageGate() without creds should return a nil gate and nil closer")
+	}
+}
+
 func TestBuildStorageGateRequiresIdentityWhenTrueNASConfigured(t *testing.T) {
 	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
 	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
@@ -217,5 +230,21 @@ func TestBuildStorageGateRequiresIdentityWhenTrueNASConfigured(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "iscsi_initiator_addr") {
 		t.Fatalf("BuildStorageGate() error = %q, want iscsi_initiator_addr", got)
+	}
+}
+
+func TestLazyStorageGateDefersIdentityErrorUntilWait(t *testing.T) {
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-secret")
+
+	gate := lazyStorageGate("")
+	if gate == nil {
+		t.Fatal("lazyStorageGate() = nil, want configured gate")
+	}
+	if err := gate.WaitDetached(context.Background(), time.Second); err == nil {
+		t.Fatal("WaitDetached() error = nil, want missing identity error")
+	} else if got := err.Error(); !strings.Contains(got, "iscsi_initiator_addr") {
+		t.Fatalf("WaitDetached() error = %q, want iscsi_initiator_addr", got)
 	}
 }

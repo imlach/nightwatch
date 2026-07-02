@@ -23,8 +23,10 @@ import (
 )
 
 // Config is the assembly knobs shared by drain-shutdown and wake: client config
-// paths, the per-phase timeouts, and the per-op toggles. TrueNAS wiring is read
-// from the environment (NIGHTWATCH_TRUENAS_*) at build time, matching the CLI.
+// paths, the per-phase timeouts, and the per-op toggles. TrueNAS creds
+// (NIGHTWATCH_TRUENAS_*) are checked cheaply at build time only to decide
+// whether a storage gate exists; the env is read again, and the connection
+// dialed, when the storage-gate step actually runs.
 type Config struct {
 	Kubeconfig, Talosconfig string
 
@@ -48,7 +50,9 @@ type NodeOps interface {
 }
 
 // Backends are the live clients a lifecycle op drives, plus an optional closer
-// run when the op finishes (e.g. the TrueNAS websocket).
+// run when the op finishes. The TrueNAS websocket is opened and closed inside
+// the storage gate call itself (see lazyStorageGate), so Close today only
+// covers the Talos client.
 type Backends struct {
 	Nodes   NodeOps
 	Talos   lifecycle.TalosShutdown
@@ -161,31 +165,18 @@ func powerOnTalos(t lifecycle.TalosShutdown) lifecycle.TalosReachable {
 
 // RealBuilder wires the live backends for one node: k8s from kubeconfig, the
 // Talos machine API, the per-node BMC adapter, and (when TrueNAS creds are in
-// env) the iSCSI session gate bound to the node's explicit inventory identity.
+// env) a lazy iSCSI session gate bound to the node's explicit inventory identity.
 func RealBuilder(ctx context.Context, node inventory.NodeSpec, cfg Config) (Backends, error) {
-	storage, closeStorage, err := BuildStorageGate(ctx, StorageGateIdentity(node))
-	if err != nil {
-		return Backends{}, fmt.Errorf("storage gate: %w", err)
-	}
 	kc, err := k8s.NewFromKubeconfig(cfg.Kubeconfig)
 	if err != nil {
-		if closeStorage != nil {
-			closeStorage()
-		}
 		return Backends{}, fmt.Errorf("kube client: %w", err)
 	}
 	tc, err := talos.New(ctx, cfg.Talosconfig)
 	if err != nil {
-		if closeStorage != nil {
-			closeStorage()
-		}
 		return Backends{}, fmt.Errorf("talos client: %w", err)
 	}
 	power, err := bmc.New(node.BMC.Type, node.BMC.Host, node.BMC.Username, node.BMC.Password)
 	if err != nil {
-		if closeStorage != nil {
-			closeStorage()
-		}
 		_ = tc.Close()
 		return Backends{}, fmt.Errorf("bmc: %w", err)
 	}
@@ -193,14 +184,43 @@ func RealBuilder(ctx context.Context, node inventory.NodeSpec, cfg Config) (Back
 		Nodes:   kc,
 		Talos:   tc,
 		Power:   power,
-		Storage: storage,
+		Storage: lazyStorageGate(StorageGateIdentity(node)),
 		Close: func() {
 			_ = tc.Close()
-			if closeStorage != nil {
-				closeStorage()
-			}
 		},
 	}, nil
+}
+
+func lazyStorageGate(gateToken string) lifecycle.StorageGate {
+	// A true nil interface here (not a nil-valued StorageGateFunc) is
+	// load-bearing: DrainShutdown checks it to record the step as skipped
+	// rather than a false success.
+	if !TrueNASConfigured() {
+		return nil
+	}
+	return lifecycle.StorageGateFunc(func(ctx context.Context, timeout time.Duration) error {
+		// truenas.New has no internal deadline - dial + auth are bounded only by
+		// ctx, and the reconcile ctx is cancel-only. Bound the whole step by the
+		// timeout so the dial and the wait share one budget and a black-holed
+		// endpoint can't hang the reconcile worker indefinitely. <=0 defaults to
+		// 5 minutes, same as waitPowerOff in drainshutdown.go.
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		gate, closeGate, err := BuildStorageGate(ctx, gateToken)
+		if err != nil {
+			return err
+		}
+		if closeGate != nil {
+			defer closeGate()
+		}
+		if gate == nil {
+			return nil
+		}
+		return gate.WaitDetached(ctx, timeout)
+	})
 }
 
 // StorageGateIdentity returns the explicit inventory identity used to match the
@@ -214,10 +234,10 @@ func StorageGateIdentity(node inventory.NodeSpec) string {
 // node's explicit storage identity. Returns a nil gate when TrueNAS creds are
 // unset, so the state machine skips the gate.
 func BuildStorageGate(ctx context.Context, gateToken string) (lifecycle.StorageGate, func(), error) {
-	host, user, key := TrueNASEnv()
-	if host == "" || user == "" || key == "" {
+	if !TrueNASConfigured() {
 		return nil, nil, nil
 	}
+	host, user, key := TrueNASEnv()
 	if gateToken == "" {
 		return nil, nil, fmt.Errorf("node has no storage gate identity (iscsi_initiator_addr) to match iscsi sessions on")
 	}
@@ -237,4 +257,12 @@ func TrueNASEnv() (host, user, key string) {
 	return os.Getenv("NIGHTWATCH_TRUENAS_HOST"),
 		os.Getenv("NIGHTWATCH_TRUENAS_USERNAME"),
 		os.Getenv("NIGHTWATCH_TRUENAS_API_KEY")
+}
+
+// TrueNASConfigured reports whether all three TrueNAS env vars are set, i.e.
+// whether a storage gate exists at all. Shared by the gate builders and the
+// CLI's plan display so the presence check can't drift across call sites.
+func TrueNASConfigured() bool {
+	host, user, key := TrueNASEnv()
+	return host != "" && user != "" && key != ""
 }

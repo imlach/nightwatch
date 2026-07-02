@@ -10,6 +10,7 @@ nodes:
     role: gpu-worker-small
     talos_endpoint: "192.0.2.10"
     iscsi_initiator_addr: "198.51.100.10"
+    ceph_client_addr: "203.0.113.10"
     kube_node_name: node-1
     bmc: {type: amt, host: "192.0.2.1"}
     wake_policy: {quiet_mode: eligible}
@@ -28,6 +29,9 @@ nodes:
 	}
 	if node.ISCSIInitiatorAddr != "198.51.100.10" {
 		t.Fatalf("iscsi_initiator_addr = %q, want 198.51.100.10", node.ISCSIInitiatorAddr)
+	}
+	if node.CephClientAddr != "203.0.113.10" {
+		t.Fatalf("ceph_client_addr = %q, want 203.0.113.10", node.CephClientAddr)
 	}
 }
 

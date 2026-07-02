@@ -23,6 +23,14 @@ type NodeSpec struct {
 	Labels             map[string]string `yaml:"labels"`
 	GPUs               []string          `yaml:"gpus"`
 	ISCSIInitiatorAddr string            `yaml:"iscsi_initiator_addr"`
+	// CephClientAddr is the node's Ceph client network address exactly as it
+	// appears in an `rbd status` watcher entry (e.g. "203.0.113.10"). Like
+	// ISCSIInitiatorAddr, this is an explicit, operator-set identity with no
+	// derived fallback (see operate.CephStorageGateIdentity): the address a
+	// node's RBD client binds to for its watch registration is not reliably
+	// derivable from TalosEndpoint or any other field already in this struct,
+	// and guessing wrong here means the storage gate silently never clears.
+	CephClientAddr string `yaml:"ceph_client_addr"`
 }
 
 type BMCConfig struct {

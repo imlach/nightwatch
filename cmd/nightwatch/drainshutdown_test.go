@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -70,17 +69,6 @@ func TestDrainShutdownPlanShowsMissingGateIdentity(t *testing.T) {
 	plan := drainShutdownPlan("wkr-01", "node-1", node, drainShutdownConfig{})
 	if !strings.Contains(plan, "missing iscsi_initiator_addr") {
 		t.Errorf("plan should flag a missing storage gate identity:\n%s", plan)
-	}
-}
-
-func TestBuildStorageGateNoCreds(t *testing.T) {
-	clearTrueNASEnv(t)
-	sg, closeFn, err := buildStorageGate(context.Background(), "192.0.2.10")
-	if err != nil {
-		t.Fatalf("buildStorageGate without creds err = %v, want nil", err)
-	}
-	if sg != nil || closeFn != nil {
-		t.Fatal("buildStorageGate without creds should return a nil gate and nil closer")
 	}
 }
 

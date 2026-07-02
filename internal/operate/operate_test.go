@@ -204,6 +204,19 @@ func TestStorageGateIdentityDoesNotFallbackToTalosEndpoint(t *testing.T) {
 	}
 }
 
+func TestBuildStorageGateNoCreds(t *testing.T) {
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "")
+	sg, closeFn, err := BuildStorageGate(context.Background(), "198.51.100.10")
+	if err != nil {
+		t.Fatalf("BuildStorageGate() without creds err = %v, want nil", err)
+	}
+	if sg != nil || closeFn != nil {
+		t.Fatal("BuildStorageGate() without creds should return a nil gate and nil closer")
+	}
+}
+
 func TestBuildStorageGateRequiresIdentityWhenTrueNASConfigured(t *testing.T) {
 	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
 	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")

@@ -68,18 +68,38 @@ func (c drainShutdownConfig) operate() operate.Config {
 	}
 }
 
+// storagePlanLine describes which storage-gate backend (if any) will run for
+// this node, mirroring operate.lazyStorageGate's own backend selection so the
+// plan never lies about what execution will actually do: TrueNAS and Ceph are
+// each reported only when their env vars are fully present, and having both
+// present is flagged as the same ambiguous-config error the gate itself
+// raises at runtime, rather than silently describing just one of them.
+func storagePlanLine(node inventory.NodeSpec) string {
+	truenas, ceph := operate.TrueNASConfigured(), operate.CephConfigured()
+	switch {
+	case truenas && ceph:
+		return "AMBIGUOUS: both NIGHTWATCH_TRUENAS_* and NIGHTWATCH_CEPH_* are set; configure exactly one storage-gate backend"
+	case truenas:
+		host, _, _ := operate.TrueNASEnv()
+		if id := operate.StorageGateIdentity(node); id != "" {
+			return fmt.Sprintf("iscsi gate via %s, match initiator_addr=%s", host, id)
+		}
+		return fmt.Sprintf("iscsi gate via %s, missing iscsi_initiator_addr", host)
+	case ceph:
+		host, _, _, _ := operate.CephEnv()
+		if id := operate.CephStorageGateIdentity(node); id != "" {
+			return fmt.Sprintf("ceph rbd gate via %s, match client_addr=%s", host, id)
+		}
+		return fmt.Sprintf("ceph rbd gate via %s, missing ceph_client_addr", host)
+	default:
+		return "skipped (no TrueNAS or Ceph creds in env)"
+	}
+}
+
 // drainShutdownPlan renders the resolved plan - printed before acting and the
 // sole output of --dry-run.
 func drainShutdownPlan(invName, kubeName string, node inventory.NodeSpec, c drainShutdownConfig) string {
-	storage := "skipped (no TrueNAS creds in env)"
-	if operate.TrueNASConfigured() {
-		host, _, _ := operate.TrueNASEnv()
-		if id := operate.StorageGateIdentity(node); id != "" {
-			storage = fmt.Sprintf("iscsi gate via %s, match initiator_addr=%s", host, id)
-		} else {
-			storage = fmt.Sprintf("iscsi gate via %s, missing iscsi_initiator_addr", host)
-		}
-	}
+	storage := storagePlanLine(node)
 	return fmt.Sprintf("plan drain-shutdown %s\n"+
 		"  kube_node=%s talos=%s bmc=%s/%s\n"+
 		"  storage=%s force_bmc_off=%t\n"+

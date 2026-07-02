@@ -238,7 +238,7 @@ func TestLazyStorageGateDefersIdentityErrorUntilWait(t *testing.T) {
 	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
 	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-secret")
 
-	gate := lazyStorageGate("")
+	gate := lazyStorageGate(inventory.NodeSpec{})
 	if gate == nil {
 		t.Fatal("lazyStorageGate() = nil, want configured gate")
 	}
@@ -246,5 +246,133 @@ func TestLazyStorageGateDefersIdentityErrorUntilWait(t *testing.T) {
 		t.Fatal("WaitDetached() error = nil, want missing identity error")
 	} else if got := err.Error(); !strings.Contains(got, "iscsi_initiator_addr") {
 		t.Fatalf("WaitDetached() error = %q, want iscsi_initiator_addr", got)
+	}
+}
+
+// clearStorageGateEnv resets every storage-gate env var (both backends) so a
+// test can assert "unconfigured" or set up exactly the combination it wants,
+// unaffected by which vars a previous test happened to set.
+func clearStorageGateEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"NIGHTWATCH_TRUENAS_HOST", "NIGHTWATCH_TRUENAS_USERNAME", "NIGHTWATCH_TRUENAS_API_KEY",
+		"NIGHTWATCH_CEPH_HOST", "NIGHTWATCH_CEPH_USERNAME", "NIGHTWATCH_CEPH_PASSWORD", "NIGHTWATCH_CEPH_IMAGES",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func TestLazyStorageGateNilWhenUnconfigured(t *testing.T) {
+	clearStorageGateEnv(t)
+	if gate := lazyStorageGate(inventory.NodeSpec{}); gate != nil {
+		t.Fatalf("lazyStorageGate() = %v, want nil (a real nil interface) when no backend is configured", gate)
+	}
+}
+
+func TestCephStorageGateIdentityUsesExplicitInventoryField(t *testing.T) {
+	node := inventory.NodeSpec{
+		TalosEndpoint:  "192.0.2.10",
+		CephClientAddr: "203.0.113.10",
+	}
+	if got := CephStorageGateIdentity(node); got != "203.0.113.10" {
+		t.Fatalf("CephStorageGateIdentity() = %q, want explicit ceph_client_addr", got)
+	}
+}
+
+func TestCephStorageGateIdentityDoesNotFallbackToTalosEndpoint(t *testing.T) {
+	node := inventory.NodeSpec{TalosEndpoint: "192.0.2.10"}
+	if got := CephStorageGateIdentity(node); got != "" {
+		t.Fatalf("CephStorageGateIdentity() = %q, want empty without explicit storage identity", got)
+	}
+}
+
+func TestBuildCephStorageGateRequiresIdentityWhenCephConfigured(t *testing.T) {
+	clearStorageGateEnv(t)
+	t.Setenv("NIGHTWATCH_CEPH_HOST", "ceph-mgr.example.com")
+	t.Setenv("NIGHTWATCH_CEPH_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_CEPH_PASSWORD", "3-secret")
+	t.Setenv("NIGHTWATCH_CEPH_IMAGES", "rbd/node-1-boot")
+	sg, closeFn, err := BuildCephStorageGate(context.Background(), "")
+	if err == nil {
+		t.Fatal("BuildCephStorageGate() error = nil, want missing identity error")
+	}
+	if sg != nil || closeFn != nil {
+		t.Fatal("BuildCephStorageGate() should not return a gate or closer when identity is missing")
+	}
+	if got := err.Error(); !strings.Contains(got, "ceph_client_addr") {
+		t.Fatalf("BuildCephStorageGate() error = %q, want ceph_client_addr", got)
+	}
+}
+
+func TestBuildCephStorageGateRequiresImagesWhenCephConfigured(t *testing.T) {
+	clearStorageGateEnv(t)
+	t.Setenv("NIGHTWATCH_CEPH_HOST", "ceph-mgr.example.com")
+	t.Setenv("NIGHTWATCH_CEPH_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_CEPH_PASSWORD", "3-secret")
+	sg, closeFn, err := BuildCephStorageGate(context.Background(), "203.0.113.10")
+	if err == nil {
+		t.Fatal("BuildCephStorageGate() error = nil, want missing NIGHTWATCH_CEPH_IMAGES error")
+	}
+	if sg != nil || closeFn != nil {
+		t.Fatal("BuildCephStorageGate() should not return a gate or closer when no images are configured")
+	}
+	if got := err.Error(); !strings.Contains(got, "NIGHTWATCH_CEPH_IMAGES") {
+		t.Fatalf("BuildCephStorageGate() error = %q, want NIGHTWATCH_CEPH_IMAGES", got)
+	}
+}
+
+func TestBuildCephStorageGateNoCredsIsNilNotError(t *testing.T) {
+	clearStorageGateEnv(t)
+	sg, closeFn, err := BuildCephStorageGate(context.Background(), "203.0.113.10")
+	if err != nil {
+		t.Fatalf("BuildCephStorageGate() without creds err = %v, want nil", err)
+	}
+	if sg != nil || closeFn != nil {
+		t.Fatal("BuildCephStorageGate() without creds should return a nil gate and nil closer")
+	}
+}
+
+func TestLazyStorageGateDefersCephIdentityErrorUntilWait(t *testing.T) {
+	clearStorageGateEnv(t)
+	t.Setenv("NIGHTWATCH_CEPH_HOST", "ceph-mgr.example.com")
+	t.Setenv("NIGHTWATCH_CEPH_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_CEPH_PASSWORD", "3-secret")
+	t.Setenv("NIGHTWATCH_CEPH_IMAGES", "rbd/node-1-boot")
+
+	gate := lazyStorageGate(inventory.NodeSpec{})
+	if gate == nil {
+		t.Fatal("lazyStorageGate() = nil, want configured Ceph gate")
+	}
+	if err := gate.WaitDetached(context.Background(), time.Second); err == nil {
+		t.Fatal("WaitDetached() error = nil, want missing identity error")
+	} else if got := err.Error(); !strings.Contains(got, "ceph_client_addr") {
+		t.Fatalf("WaitDetached() error = %q, want ceph_client_addr", got)
+	}
+}
+
+// TestLazyStorageGateAmbiguousWhenBothConfigured pins the deliberate choice to
+// fail loudly rather than guess (or gate on both) when both backends' env
+// vars are present - see lazyStorageGate's doc comment for the rationale.
+func TestLazyStorageGateAmbiguousWhenBothConfigured(t *testing.T) {
+	clearStorageGateEnv(t)
+	t.Setenv("NIGHTWATCH_TRUENAS_HOST", "storage.example.com")
+	t.Setenv("NIGHTWATCH_TRUENAS_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_TRUENAS_API_KEY", "3-secret")
+	t.Setenv("NIGHTWATCH_CEPH_HOST", "ceph-mgr.example.com")
+	t.Setenv("NIGHTWATCH_CEPH_USERNAME", "nightwatch")
+	t.Setenv("NIGHTWATCH_CEPH_PASSWORD", "3-secret")
+	t.Setenv("NIGHTWATCH_CEPH_IMAGES", "rbd/node-1-boot")
+
+	node := inventory.NodeSpec{ISCSIInitiatorAddr: "198.51.100.10", CephClientAddr: "203.0.113.10"}
+	gate := lazyStorageGate(node)
+	if gate == nil {
+		t.Fatal("lazyStorageGate() = nil, want a gate that fails on WaitDetached when both backends are configured")
+	}
+	err := gate.WaitDetached(context.Background(), time.Second)
+	if err == nil {
+		t.Fatal("WaitDetached() error = nil, want ambiguous-config error when both backends are configured")
+	}
+	if got := err.Error(); !strings.Contains(got, "TRUENAS") || !strings.Contains(got, "CEPH") {
+		t.Fatalf("WaitDetached() error = %q, want it to name both env prefixes", got)
 	}
 }

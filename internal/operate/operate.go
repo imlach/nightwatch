@@ -200,17 +200,15 @@ func lazyStorageGate(gateToken string) lifecycle.StorageGate {
 	}
 	return lifecycle.StorageGateFunc(func(ctx context.Context, timeout time.Duration) error {
 		// truenas.New has no internal deadline - dial + auth are bounded only by
-		// ctx, which the reconcile loop leaves cancel-only. Scope the dial (and
-		// the wait below) to the step's timeout budget so a black-holed endpoint
-		// can't hang the reconcile worker indefinitely. Guard on timeout>0: a
-		// zero/unset StorageTimeout means "no override" elsewhere in this
-		// codebase (e.g. waitPowerOff in drainshutdown.go), never "expire now" -
-		// so treat it the same way here and leave ctx unbounded.
-		if timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
+		// ctx, and the reconcile ctx is cancel-only. Bound the whole step by the
+		// timeout so the dial and the wait share one budget and a black-holed
+		// endpoint can't hang the reconcile worker indefinitely. <=0 defaults to
+		// 5 minutes, same as waitPowerOff in drainshutdown.go.
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
 		}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 		gate, closeGate, err := BuildStorageGate(ctx, gateToken)
 		if err != nil {
 			return err

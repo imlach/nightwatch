@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/imlach/nightwatch/internal/inventory"
-	"github.com/imlach/nightwatch/internal/lifecycle"
 	"github.com/imlach/nightwatch/internal/operate"
 	"github.com/imlach/nightwatch/internal/operation"
 )
@@ -67,13 +66,6 @@ func (c drainShutdownConfig) operate() operate.Config {
 		PowerOffTimeout: c.powerOffTimeout,
 		Poll:            c.poll,
 	}
-}
-
-// buildStorageGate delegates to the shared operate layer (same env-driven
-// iSCSI gate the executor wires) - kept here so the CLI plan/test surface is
-// stable.
-func buildStorageGate(ctx context.Context, gateToken string) (lifecycle.StorageGate, func(), error) {
-	return operate.BuildStorageGate(ctx, gateToken)
 }
 
 // drainShutdownPlan renders the resolved plan - printed before acting and the
